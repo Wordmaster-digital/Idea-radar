@@ -1,0 +1,37 @@
+name: Daily Idea Digest
+
+# 매일 한국시간 오전 8시 (UTC 23:00) 실행
+on:
+  schedule:
+    - cron: "0 23 * * *"
+  workflow_dispatch:        # 저장소 Actions 탭에서 수동 실행도 가능
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Send digest
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python3 daily_digest.py --top 30
+
+# ── 설정 방법 ────────────────────────────────────────────────
+# 1. GitHub에 새 저장소를 만들고 daily_digest.py 를 루트에 넣는다
+# 2. 이 파일을 .github/workflows/daily_digest.yml 로 저장한다
+# 3. 디스코드에서: 채널 설정 → 연동 → 웹훅 → 새 웹훅 → URL 복사
+# 4. GitHub 저장소 → Settings → Secrets and variables → Actions
+#    → New repository secret → 이름 DISCORD_WEBHOOK_URL, 값에 URL 붙여넣기
+# 5. Actions 탭에서 "Run workflow"로 한 번 수동 실행해 확인
+#
+# 공개 저장소면 Actions 사용량 무제한, 비공개도 월 2,000분 무료.
+# 이 작업은 1회 2~3분이라 한 달에 90분 정도 쓴다.
+#
+# 옵션:
+#   --only-gaps     국내에 유사 앱이 없는 항목(🟢)만 보내기
+#   --min-score N   HN 최소 점수 (기본 150, 높일수록 적게 옴)
