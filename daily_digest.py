@@ -517,6 +517,28 @@ def summarize(item):
     return item
 
 
+def render_shortlist(picks):
+    """디벨롭 후보를 다이제스트 맨 위에 붙일 블록으로 만든다."""
+    if not picks:
+        return ("## 🎯 오늘의 디벨롭 후보\n"
+                "해당 없음. 기준을 통과한 항목이 없습니다.\n"
+                "─────────────")
+    lines = ["## 🎯 오늘의 디벨롭 후보", ""]
+    for n, p in enumerate(picks, 1):
+        lines.append(f"**{n}. [{p['title'][:80]}]({strip_utm(p['url'])})**")
+        if p["what"]:
+            lines.append(f"　· 무엇 — {p['what']}")
+        if p["axis"]:
+            lines.append(f"　· 더할 축 — {p['axis']}")
+        if p["who"]:
+            lines.append(f"　· 돈 낼 사람 — {p['who']}")
+        if p["risk"]:
+            lines.append(f"　· 약점 — {p['risk']}")
+        lines.append("")
+    lines.append("─────────────")
+    return "\n".join(lines)
+
+
 def to_blocks(items, header):
     lines, blocks = [header], []
     for it in items:
@@ -626,12 +648,15 @@ def main():
         items = [gather_evidence(it) for it in items]
         print("판정 중...", file=sys.stderr)
         items = llm_enrich.judge_batch(items)
+        print("디벨롭 후보 선정 중...", file=sys.stderr)
+        picks = llm_enrich.shortlist(items)
         for it in items:
             it.setdefault("verdict", "불명")
             it["kr_apps"] = []
             it["kr"] = {"없음": "KR 공백", "있음": "KR 유사",
                         "유사": "KR 인접"}.get(it["verdict"], "판정불가")
     else:
+        picks = []
         print("한국 대조 중 (단순 매칭)...", file=sys.stderr)
         items = [annotate_kr(it) for it in items]
 
@@ -650,6 +675,8 @@ def main():
               + " ".join(f"{k} {v}" for k, v in by_src.items()) + "\n")
 
     blocks = to_blocks(items, header)
+    if use_llm:
+        blocks.insert(0, render_shortlist(picks))
 
     if args.dry_run:
         print("\n\n".join(blocks))
