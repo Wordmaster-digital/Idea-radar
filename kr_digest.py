@@ -129,3 +129,113 @@ def split_ideas(ideas):
                   key=lambda i: order[i["verdict"]])
     stops = [i for i in ideas if i["verdict"] == "STOP"]
     return full[:MAX_FULL_IDEAS], stops[:MAX_STOP_IDEAS]
+
+
+NOTE_NO_KEY = "⚠ ANTHROPIC_API_KEY가 없어 아이템 카드와 아이디어를 생략했습니다."
+NOTE_CARD_FAIL = "⚠ 아이템 카드 생성에 실패해 아이디어를 생략했습니다."
+NOTE_IDEA_FAIL = "⚠ 보완 아이디어 생성에 실패했습니다."
+
+
+def _idea_block(n, idea, source):
+    """아이디어 하나를 줄 목록으로 만든다. 들여쓰기는 전각 공백."""
+    data = ", ".join(idea["data_sources"]) or "확인 필요"
+    return [
+        "",
+        f"**{n}. {idea['title']}** — {idea['verdict']}",
+        f"　원본: [{source['name']}]({source['url']}) · {source['stage']}단 · {source['what']}",
+        f"　한 줄: {idea['one_liner']}",
+        f"　추가할 축: {idea['axis']} → 정해주는 행동: {idea['decision']}",
+        f"　불편 장면: {idea['pain_scene']}",
+        f"　첫 사용자: {idea['first_users']} / 예상 밖: {idea['unexpected_users']}",
+        f"　공개 데이터: {data}",
+        f"　2주 MVP: {idea['mvp_2weeks']} · 채널: {idea['channel']}",
+        f"　타이밍: {idea['timing']}",
+        f"　지불자: {idea['payer']}",
+        f"　기존 서비스가 못 하는 것: {idea['incumbent_gap']}",
+        f"　함정: {idea['trap']}",
+        f"　국내 중복: {idea['kr_duplicate']} — {idea['kr_duplicate_basis']}",
+        f"　판정 이유: {idea['verdict_reason']}",
+    ]
+
+
+def render_ideas(date_str, full, stops, selected):
+    lines = [f"## 🧗 {date_str} 보완 아이디어"]
+    if not full and not stops:
+        lines.append("기준을 통과한 아이디어가 없습니다.")
+        return lines
+    if not full:
+        lines.append("오늘은 GO·보류 판정 아이디어가 없습니다.")
+    for n, idea in enumerate(full, 1):
+        lines += _idea_block(n, idea, selected[idea["i"]])
+    if stops:
+        lines += ["", "**❌ 탈락한 아이디어**"]
+        lines += [f"· {x['title']} ← {selected[x['i']]['name']}: {x['verdict_reason']}"
+                  for x in stops]
+    return lines
+
+
+def _overflow(lines, total):
+    if total > MAX_LIST:
+        lines.append(f"외 {total - MAX_LIST}건")
+    return lines
+
+
+def render_cards(hours, cards):
+    lines = ["", f"## 🇰🇷 지난 {hours}시간 국내 신규 아이템 ({len(cards)}건)"]
+    for card in cards[:MAX_LIST]:
+        bits = [f"· [{card['name']}]({card['url']}) {card['what']}", f"{card['stage']}단"]
+        outlets = [o for o in card["outlets"] if not o.startswith("앱스토어")]
+        if outlets:
+            bits.append(f"매체 {len(outlets)}곳")
+        if card["traction"]:
+            bits.append(card["traction"])
+        if card["chart_rank"]:
+            bits.append(f"앱스토어 #{card['chart_rank']}")
+        lines.append(" · ".join(bits))
+    return _overflow(lines, len(cards))
+
+
+def render_raw(hours, groups, note):
+    """LLM 없이 규칙만으로 거른 목록."""
+    lines = [f"## 🇰🇷 지난 {hours}시간 국내 신규 아이템 ({len(groups)}건)", note]
+    for group in groups[:MAX_LIST]:
+        outlets = ", ".join(sorted(group["outlets"]))
+        lines.append(f"· [{group['title']}]({group['url']}) · {outlets}")
+    return _overflow(lines, len(groups))
+
+
+def render_empty(date_str, hours):
+    return [f"## 🇰🇷 {date_str} 국내 아이템 레이더",
+            f"지난 {hours}시간 조건에 맞는 신규 아이템이 없습니다."]
+
+
+def chunk_lines(lines, limit=CHUNK_LIMIT):
+    """줄 단위로 모아 limit 이하 덩어리로 나눈다."""
+    chunks, current = [], ""
+    for line in lines:
+        while len(line) > limit:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(line[:limit])
+            line = line[limit:]
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > limit:
+            chunks.append(current)
+            current = line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def send_discord(webhook, content, opener=urllib.request.urlopen):
+    """멘션을 막고 링크 미리보기를 끈 채로 보낸다."""
+    body = json.dumps({"content": content, "flags": 4,
+                       "allowed_mentions": {"parse": []}}).encode("utf-8")
+    request = urllib.request.Request(
+        webhook, data=body,
+        headers={"Content-Type": "application/json", "User-Agent": UA})
+    with opener(request, timeout=25) as response:
+        return response.status
