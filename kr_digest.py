@@ -239,3 +239,113 @@ def send_discord(webhook, content, opener=urllib.request.urlopen):
         headers={"Content-Type": "application/json", "User-Agent": UA})
     with opener(request, timeout=25) as response:
         return response.status
+
+
+def _record(groups, names):
+    """이번 실행에서 처리한 URL·앱 ID와 병합 카드 이름을 모은다."""
+    urls, apps = [], []
+    for group in groups:
+        for url in group["urls"]:
+            if url not in urls:
+                urls.append(url)
+        app_id = group.get("app_id")
+        if app_id and app_id not in apps:
+            apps.append(app_id)
+    return {"urls": urls, "apps": apps, "names": list(names)}
+
+
+def build_report(items, state, *, hours, today, client, evidence_fn=gather_evidence):
+    """수집 항목으로 발송할 줄 목록과 기록할 키를 만든다.
+
+    저하 모드(키 없음·LLM 실패)에서는 새 키를 기록하지 않는다. 키를 고친 뒤
+    같은 날 다시 실행해도 같은 항목으로 아이디어를 만들 수 있게 하기 위해서다.
+    """
+    empty = {"urls": [], "apps": [], "names": []}
+    groups = group_items(items, state)
+    date_str = today.isoformat()
+    if not groups:
+        return render_empty(date_str, hours), empty
+    if client is None:
+        return render_raw(hours, groups, NOTE_NO_KEY), empty
+    try:
+        cards = idea_ladder.make_cards(client, groups)
+    except idea_ladder.LadderError as e:
+        print(f"[카드] 실패: {e}", file=sys.stderr)
+        return render_raw(hours, groups, NOTE_CARD_FAIL), empty
+
+    merged = merge_cards(groups, cards, state)
+    selected = merged[:MAX_SELECTED]
+    for card in selected:
+        evidence_fn(card)
+
+    lines, record = [], empty
+    try:
+        ideas = idea_ladder.make_ideas(client, selected, date_str) if selected else []
+        full, stops = split_ideas(ideas)
+        lines += render_ideas(date_str, full, stops, selected)
+        record = _record(groups, [card["name"] for card in merged])
+    except idea_ladder.LadderError as e:
+        print(f"[아이디어] 실패: {e}", file=sys.stderr)
+        lines.append(NOTE_IDEA_FAIL)
+    lines += render_cards(hours, merged)
+    return lines, record
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(description="국내 신규 아이템 레이더와 보완 아이디어")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="디스코드로 보내지 않고 화면에 출력한다 (기록 저장 안 함)")
+    parser.add_argument("--hours", type=int, default=24, help="수집 기간(시간). 기본 24")
+    parser.add_argument("--state", default=os.path.join("state", "seen.json"),
+                        help="발송 기록 파일 경로")
+    args = parser.parse_args(argv)
+    if args.hours < 1:
+        parser.error("--hours는 1 이상이어야 합니다")
+    return args
+
+
+def main(argv=None, *, now=None, fetcher=kr_sources.fetch, client_factory=None,
+         opener=urllib.request.urlopen, sleep=time.sleep, evidence_fn=gather_evidence):
+    args = parse_args(argv)
+    now = now or datetime.now(timezone.utc)
+    today = now.astimezone(KST).date()
+
+    webhook = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+    if not args.dry_run and not webhook:
+        print("DISCORD_WEBHOOK_URL 환경변수가 없습니다.", file=sys.stderr)
+        return 1
+
+    items, errors = kr_sources.collect(now, args.hours, fetcher)
+    if len(errors) == kr_sources.SOURCE_COUNT:
+        print("모든 소스 조회 실패 — 발송하지 않습니다.", file=sys.stderr)
+        return 1
+    print(f"수집 {len(items)}건, 실패한 소스 {len(errors)}개", file=sys.stderr)
+
+    state = seen_state.load(args.state, today)
+    client = (client_factory or idea_ladder.make_client)() if idea_ladder.has_key() else None
+    lines, record = build_report(items, state, hours=args.hours, today=today,
+                                 client=client, evidence_fn=evidence_fn)
+    chunks = chunk_lines(lines)
+
+    if args.dry_run:
+        print("\n\n".join(chunks))
+        return 0
+
+    try:
+        for n, chunk in enumerate(chunks):
+            if n:
+                sleep(1)
+            send_discord(webhook, chunk, opener)
+    except Exception as e:
+        print(f"디스코드 발송 실패: {e}", file=sys.stderr)
+        return 1
+
+    for kind, keys in record.items():
+        seen_state.mark(state, kind, keys, today)
+    seen_state.save(args.state, state)
+    print(f"발송 완료 ({len(chunks)} 메시지)", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
