@@ -131,7 +131,8 @@ def split_ideas(ideas):
     return full[:MAX_FULL_IDEAS], stops[:MAX_STOP_IDEAS]
 
 
-NOTE_NO_KEY = "⚠ ANTHROPIC_API_KEY가 없어 아이템 카드와 아이디어를 생략했습니다."
+NOTE_NO_KEY = "⚠ OPENAI_API_KEY가 없어 아이템 카드와 아이디어를 생략했습니다."
+NOTE_CLIENT_FAIL = "⚠ OpenAI 초기화에 실패해 아이템 카드와 아이디어를 생략했습니다."
 NOTE_CARD_FAIL = "⚠ 아이템 카드 생성에 실패해 아이디어를 생략했습니다."
 NOTE_IDEA_FAIL = "⚠ 보완 아이디어 생성에 실패했습니다."
 
@@ -254,7 +255,8 @@ def _record(groups, names):
     return {"urls": urls, "apps": apps, "names": list(names)}
 
 
-def build_report(items, state, *, hours, today, client, evidence_fn=gather_evidence):
+def build_report(items, state, *, hours, today, client, evidence_fn=gather_evidence,
+                 no_client_note=NOTE_NO_KEY):
     """수집 항목으로 발송할 줄 목록과 기록할 키를 만든다.
 
     저하 모드(키 없음·LLM 실패)에서는 새 키를 기록하지 않는다. 키를 고친 뒤
@@ -266,7 +268,7 @@ def build_report(items, state, *, hours, today, client, evidence_fn=gather_evide
     if not groups:
         return render_empty(date_str, hours), empty
     if client is None:
-        return render_raw(hours, groups, NOTE_NO_KEY), empty
+        return render_raw(hours, groups, no_client_note), empty
     try:
         cards = idea_ladder.make_cards(client, groups)
     except idea_ladder.LadderError as e:
@@ -322,9 +324,16 @@ def main(argv=None, *, now=None, fetcher=kr_sources.fetch, client_factory=None,
     print(f"수집 {len(items)}건, 실패한 소스 {len(errors)}개", file=sys.stderr)
 
     state = seen_state.load(args.state, today)
-    client = (client_factory or idea_ladder.make_client)() if idea_ladder.has_key() else None
+    client, no_client_note = None, NOTE_NO_KEY
+    if idea_ladder.has_key():
+        try:
+            client = (client_factory or idea_ladder.make_client)()
+        except idea_ladder.LadderError as e:
+            print(f"[LLM] 초기화 실패: {e}", file=sys.stderr)
+            no_client_note = NOTE_CLIENT_FAIL
     lines, record = build_report(items, state, hours=args.hours, today=today,
-                                 client=client, evidence_fn=evidence_fn)
+                                 client=client, evidence_fn=evidence_fn,
+                                 no_client_note=no_client_note)
     chunks = chunk_lines(lines)
 
     if args.dry_run:

@@ -22,27 +22,43 @@
 
 ## 실행
 
-Python 3.11 이상. 의존성은 `anthropic` 하나다.
+Python 3.11 이상. 직접 의존성은 검증한 버전으로 고정한 `openai==2.54.0` 하나다.
 
 ```bash
 pip install -r requirements.txt
 python kr_digest.py --dry-run          # 발송하지 않고 화면에 출력
 python kr_digest.py --hours 48         # 수집 기간 변경 (기본 24시간)
 python kr_digest.py --state state/seen.json
-python -m unittest discover -s tests -v   # 네트워크·LLM 없이 도는 테스트 44개
+python -m unittest discover -s tests -v   # 네트워크·실제 API 호출 없이 검증
 ```
 
-`--dry-run`은 디스코드로 보내지 않고 발송 기록도 남기지 않는다. 같은 항목을 다시 보내지 않도록 `state/seen.json`에 URL(7일)·서비스명(30일)·앱 ID(120일)를 기록한다.
+`--dry-run`은 디스코드로 보내지 않고 발송 기록도 남기지 않는다. **키가 있으면 dry-run도 OpenAI API를 호출하므로 사용료가 발생한다.** 같은 항목을 다시 보내지 않도록 `state/seen.json`에 URL(7일)·서비스명(30일)·앱 ID(120일)를 기록한다.
 
 ## GitHub Actions 설정
 
 | Secret | 용도 | 없으면 |
 |---|---|---|
 | `DISCORD_WEBHOOK_URL` | 발송 대상 채널 | 발송 실패로 종료 |
-| `ANTHROPIC_API_KEY` | 아이템 카드·보완 아이디어 생성 | 규칙으로 거른 아이템 목록만 보낸다 |
+| `OPENAI_API_KEY` | 아이템 카드·보완 아이디어 생성 | 규칙으로 거른 아이템 목록만 보낸다 |
 | `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET` | 국내 유사 서비스 근거 보강 | 앱스토어 검색만 쓴다 |
 
-모델은 기본 `claude-opus-5`이고 환경변수 `IDEA_MODEL`로 바꿀 수 있다. 하루 1회 실행 기준 비용은 약 $0.6~0.7로 추정하며, 첫 실행 로그의 사용량으로 확인하는 것이 좋다. `claude-sonnet-5`로 바꾸면 토큰 단가 기준 약 40% 수준이다.
+저장소 **Settings → Secrets and variables → Actions → Secrets**에 `OPENAI_API_KEY`를 등록한다. ChatGPT 구독과 별개인 OpenAI API 프로젝트 키와 사용 가능한 API 한도가 필요하다. 키 값은 코드·로그에 넣지 않는다.
+
+모델 기본값은 `gpt-5.6-sol`이다. 로컬에서는 환경변수 `IDEA_MODEL`, Actions에서는 같은 이름의 repository variable로 바꾼다. 비어 있으면 기본값을 쓴다. 다른 모델을 지정할 때는 Responses API, strict JSON Schema, `reasoning.effort=low/high` 지원과 해당 API 프로젝트의 접근 권한을 먼저 확인한다. 모델 자동 전환은 없다.
+
+## OpenAI 호출과 실패 처리
+
+- 단일 OpenAI 클라이언트의 **Responses API**를 쓴다. 카드 생성은 `low`, 아이디어 검토는 `high` reasoning effort를 유지한다.
+- `text.format`의 JSON Schema에 `strict=true`를 지정한다. 출력 상한은 사고 토큰을 포함해 32,000개이며 `store=false`로 요청한다.
+- 요청별 timeout은 120초, SDK 재시도는 최대 2회(최초 요청 포함 최대 3회)다. 연결·시간초과·408/409/429/5xx 등 SDK가 재시도 대상으로 분류하는 오류만 같은 모델로 재시도한다. 별도 재시도 루프나 다른 provider/model로의 우회는 없다.
+- 키 없음·클라이언트 초기화 실패·카드 생성 실패는 기존 규칙 기반 목록으로 내려간다. 아이디어 생성만 실패하면 성공한 카드 목록을 유지한다.
+- 거절, 미완료/중단 응답, JSON 오류, 잘못된 필드 타입·번호·중복 번호·입력 누락도 실패로 처리한다. **저하 모드에서는 새 발송 기록을 남기지 않아** 문제를 고친 뒤 같은 항목을 다시 처리할 수 있다.
+- 성공 응답의 모델·입력/출력 토큰 수를 `[LLM]` 로그에 남긴다. Actions의 `success`만으로 API 사용 성공을 판단하지 말고 이 로그와 단계별 실패 안내를 함께 확인한다. 실제 사용료는 API 사용량 대시보드에서 확인한다.
+- 수동 실행용 해외 다이제스트의 `llm_enrich.py`도 같은 키·모델·Responses API와 재시도 정책을 사용한다.
+
+PR과 main 변경 시 Python 3.11/3.12에서 테스트가 실행된다. 테스트는 합성 응답과 실제 OpenAI SDK의 가짜 HTTP 전송을 사용하며 API 키·네이버·디스코드 접속 없이 요청 직렬화, 재시도 한도, 실패 시 목록 유지와 기록 보존을 확인한다. 모델의 실제 접근 권한·과금·한국어 출력 품질은 키를 설정한 별도 실행에서 확인해야 한다.
+
+공식 문서: [Responses API](https://developers.openai.com/api/docs/guides/migrate-to-responses), [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs), [GPT-5.6 Sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol).
 
 ## 한계
 
@@ -57,4 +73,4 @@ python -m unittest discover -s tests -v   # 네트워크·LLM 없이 도는 테�
 - `kr_digest.py` 진입점 · `kr_sources.py` 수집 · `idea_ladder.py` LLM 단계 · `seen_state.py` 발송 기록
 - `idea_ladder_prompt.md` 사람이 직접 쓰는 심층 검증 프롬프트 · `kr_check.py` 키워드 중복 검사기
 - `daily_digest.py` 기존 해외 다이제스트. 자동 실행에서는 빠졌고 `python daily_digest.py`로 직접 돌릴 수 있다
-- 설계와 구현 계획은 `docs/superpowers/` 아래에 있다
+- 이전 설계와 구현 계획은 `docs/superpowers/` 아래에 있다. 전환 전 기록이므로 현재 키·모델·SDK 설정은 이 README와 실행 코드를 따른다

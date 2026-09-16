@@ -1,5 +1,7 @@
 # 국내 아이템 레이더 + 그늘로식 보완 아이디어 구현 계획
 
+> 이전 구현의 기록이다. OpenAI 단일 provider 전환 이후의 키·SDK·모델·재시도·테스트 설정은 [현재 README](../../../README.md)를 따른다. 아래 예제 코드는 현행 설정이 아니다.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 매일 08:00 KST에 국내에서 새로 나온 창업 아이템을 모아, 그늘로식 보완 아이디어와 함께 디스코드로 보낸다.
