@@ -1,22 +1,45 @@
-
-name: Daily Idea Digest
+name: Daily KR Idea Radar
 
 on:
   schedule:
-    - cron: "0 23 * * *"
+    - cron: "0 23 * * *"   # 08:00 KST
   workflow_dispatch:
 
 jobs:
   digest:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Restore seen state
+        uses: actions/cache/restore@v6
+        with:
+          path: state
+          key: kr-seen-${{ github.run_id }}
+          restore-keys: kr-seen-
 
       - name: Send digest
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: python3 daily_digest.py --top 30
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
+          NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
+        run: python kr_digest.py
+
+      - name: Save seen state
+        if: success()
+        uses: actions/cache/save@v6
+        with:
+          path: state
+          key: kr-seen-${{ github.run_id }}
