@@ -1,4 +1,4 @@
-"""수동 해외 다이제스트도 동일 OpenAI 경로를 사용하고 실패 시 원본을 보존한다."""
+"""수동 해외 다이제스트도 동일 Codex 구독 경로를 사용하고 실패 시 원본을 보존한다."""
 import contextlib
 import copy
 import io
@@ -17,11 +17,11 @@ class EnrichTests(unittest.TestCase):
 
     def run_with_response(self, fn, rows):
         client, responses = fake_client(text=json.dumps({"rows": rows}))
-        with patch.object(idea_ladder, "make_client", return_value=contextlib.nullcontext(client)), \
+        with patch.object(idea_ladder, "make_client", return_value=client), \
              contextlib.redirect_stderr(io.StringIO()):
             result = fn(self.items)
         self.assertEqual(len(responses.calls), 1)
-        self.assertTrue(responses.calls[0]["text"]["format"]["strict"])
+        self.assertFalse(responses.calls[0]["schema"]["additionalProperties"])
         return result
 
     def test_translation(self):

@@ -1,42 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""idea_ladder.py — OpenAI로 아이템 카드와 그늘로식 보완 아이디어를 만든다.
+"""idea_ladder.py — ChatGPT 구독의 Codex로 아이템 카드와 보완 아이디어를 만든다.
 
 두 단계 모두 구조화 출력(JSON 스키마)을 강제하고, 필수 필드가 빠진 항목은 버린다.
 실패는 LadderError 하나로 모아, 호출 쪽이 저하 모드로 넘어가게 한다.
 """
 
-import json
-import os
 import sys
 
-DEFAULT_MODEL = "gpt-5.6-sol"
-MAX_OUTPUT_TOKENS = 32000
-REQUEST_TIMEOUT = 120.0
-MAX_RETRIES = 2
-
-
-class LadderError(RuntimeError):
-    """LLM 단계 실패. 호출 쪽은 이 예외만 잡으면 된다."""
-
-
-def has_key():
-    return bool(os.environ.get("OPENAI_API_KEY", "").strip())
-
-
-def model_name():
-    return os.environ.get("IDEA_MODEL", "").strip() or DEFAULT_MODEL
+from codex_llm import CodexClient, CodexError as LadderError, is_available
 
 
 def make_client():
-    """SDK를 지연 import해 키 없는 실행은 SDK 없이도 동작하게 한다."""
     try:
-        from openai import OpenAI
-
-        return OpenAI(api_key=os.environ.get("OPENAI_API_KEY", "").strip(),
-                      timeout=REQUEST_TIMEOUT, max_retries=MAX_RETRIES)
-    except Exception as e:
-        raise LadderError(f"OpenAI 클라이언트 초기화 실패: {type(e).__name__}") from e
+        return CodexClient()
+    except LadderError:
+        raise
+    except (OSError, ValueError):
+        raise LadderError("Codex 실행 환경 초기화 실패") from None
 
 
 def _object(properties):
@@ -142,41 +123,11 @@ IDEA_SYSTEM = """너는 대학생 창업팀을 위해, 오늘 국내에 나온 �
 
 
 def request_json(client, system, payload, schema, effort):
-    """한 모델의 Responses API만 사용한다. 일시적 오류 재시도는 SDK에 맡긴다."""
-    try:
-        response = client.responses.create(
-            model=model_name(),
-            max_output_tokens=MAX_OUTPUT_TOKENS,
-            instructions=system,
-            input=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
-            reasoning={"effort": effort},
-            text={"format": {"type": "json_schema", "name": "idea_radar",
-                             "strict": True, "schema": schema}},
-            store=False,
-        )
-    except Exception as e:
-        status = getattr(e, "status_code", "")
-        # API 오류 본문에는 키나 입력이 포함될 수 있어 종류와 상태만 기록한다.
-        raise LadderError(f"OpenAI 요청 실패: {type(e).__name__} {status}".strip()) from e
-    if response.status != "completed" or response.error is not None:
-        reason = getattr(response.incomplete_details, "reason", None)
-        raise LadderError(f"OpenAI 응답 미완료: {response.status} ({reason or 'unknown'})")
-    for item in response.output:
-        if item.type == "message" and any(b.type == "refusal" for b in item.content):
-            raise LadderError("모델이 요청을 거절함")
-    if not response.output_text.strip():
-        raise LadderError("OpenAI 응답에 텍스트가 없음")
-    try:
-        data = json.loads(response.output_text)
-    except ValueError as e:
-        raise LadderError("OpenAI 응답 JSON 해석 실패") from e
+    """구독으로 생성한 결과를 기존 필드·누락 검사에 전달한다."""
+    data = client.generate(system, payload, schema, effort)
     if (not isinstance(data, dict) or set(data) != set(schema["properties"])
             or any(not isinstance(data[key], list) for key in schema["properties"])):
-        raise LadderError("OpenAI 응답 목록 형식 오류")
-    usage = response.usage
-    if usage is not None:
-        print(f"[LLM] model={response.model} input_tokens={usage.input_tokens} "
-              f"output_tokens={usage.output_tokens}", file=sys.stderr)
+        raise LadderError("Codex 응답 목록 형식 오류")
     return data
 
 
@@ -202,11 +153,11 @@ def valid_rows(rows, limit, item_schema, *, require_all=False):
             print(f"[LLM] 번호가 범위 밖이라 버림: {row.get('i')}", file=sys.stderr)
             continue
         if row["i"] in seen:
-            raise LadderError("OpenAI 응답에 중복 번호가 있음")
+            raise LadderError("Codex 응답에 중복 번호가 있음")
         seen.add(row["i"])
         out.append(row)
     if require_all and len(seen) != limit:
-        raise LadderError("OpenAI 응답에서 일부 입력 항목이 누락됨")
+        raise LadderError("Codex 응답에서 일부 입력 항목이 누락됨")
     return out
 
 

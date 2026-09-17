@@ -1,12 +1,17 @@
-name: Daily KR Idea Radar
+name: KR Idea Radar (no-LLM backup)
 
 on:
   schedule:
     - cron: "0 23 * * *"   # 08:00 KST
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   digest:
+    # Set this variable after the local scheduled run is ready to avoid duplicate delivery.
+    if: github.event_name == 'workflow_dispatch' || vars.IDEA_LOCAL_ENABLED != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -32,11 +37,10 @@ jobs:
       - name: Send digest
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          IDEA_MODEL: ${{ vars.IDEA_MODEL }}
+          IDEA_LLM_MODE: "off"
           NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
           NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
-        run: python kr_digest.py
+        run: python kr_digest.py --no-llm
 
       - name: Save seen state
         if: success()

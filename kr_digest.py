@@ -131,8 +131,8 @@ def split_ideas(ideas):
     return full[:MAX_FULL_IDEAS], stops[:MAX_STOP_IDEAS]
 
 
-NOTE_NO_KEY = "⚠ OPENAI_API_KEY가 없어 아이템 카드와 아이디어를 생략했습니다."
-NOTE_CLIENT_FAIL = "⚠ OpenAI 초기화에 실패해 아이템 카드와 아이디어를 생략했습니다."
+NOTE_NO_LLM = "⚠ Codex 분석이 비활성화되어 아이템 카드와 아이디어를 생략했습니다."
+NOTE_CLIENT_FAIL = "⚠ ChatGPT 구독 로그인 확인에 실패해 아이템 카드와 아이디어를 생략했습니다."
 NOTE_CARD_FAIL = "⚠ 아이템 카드 생성에 실패해 아이디어를 생략했습니다."
 NOTE_IDEA_FAIL = "⚠ 보완 아이디어 생성에 실패했습니다."
 
@@ -256,10 +256,10 @@ def _record(groups, names):
 
 
 def build_report(items, state, *, hours, today, client, evidence_fn=gather_evidence,
-                 no_client_note=NOTE_NO_KEY):
+                 no_client_note=NOTE_NO_LLM):
     """수집 항목으로 발송할 줄 목록과 기록할 키를 만든다.
 
-    저하 모드(키 없음·LLM 실패)에서는 새 키를 기록하지 않는다. 키를 고친 뒤
+    저하 모드(Codex 미설정·LLM 실패)에서는 새 키를 기록하지 않는다. 설정을 고친 뒤
     같은 날 다시 실행해도 같은 항목으로 아이디어를 만들 수 있게 하기 위해서다.
     """
     empty = {"urls": [], "apps": [], "names": []}
@@ -297,6 +297,7 @@ def parse_args(argv):
     parser = argparse.ArgumentParser(description="국내 신규 아이템 레이더와 보완 아이디어")
     parser.add_argument("--dry-run", action="store_true",
                         help="디스코드로 보내지 않고 화면에 출력한다 (기록 저장 안 함)")
+    parser.add_argument("--no-llm", action="store_true", help="구독 사용량 없이 목록만 만든다")
     parser.add_argument("--hours", type=int, default=24, help="수집 기간(시간). 기본 24")
     parser.add_argument("--state", default=os.path.join("state", "seen.json"),
                         help="발송 기록 파일 경로")
@@ -324,8 +325,8 @@ def main(argv=None, *, now=None, fetcher=kr_sources.fetch, client_factory=None,
     print(f"수집 {len(items)}건, 실패한 소스 {len(errors)}개", file=sys.stderr)
 
     state = seen_state.load(args.state, today)
-    client, no_client_note = None, NOTE_NO_KEY
-    if idea_ladder.has_key():
+    client, no_client_note = None, NOTE_NO_LLM
+    if not args.no_llm and idea_ladder.is_available():
         try:
             client = (client_factory or idea_ladder.make_client)()
         except idea_ladder.LadderError as e:
@@ -346,7 +347,7 @@ def main(argv=None, *, now=None, fetcher=kr_sources.fetch, client_factory=None,
                 sleep(1)
             send_discord(webhook, chunk, opener)
     except Exception as e:
-        print(f"디스코드 발송 실패: {e}", file=sys.stderr)
+        print(f"디스코드 발송 실패: {type(e).__name__}", file=sys.stderr)
         return 1
 
     for kind, keys in record.items():

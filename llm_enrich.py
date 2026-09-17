@@ -1,32 +1,32 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-llm_enrich.py — 수집된 항목을 OpenAI로 보강한다.
+llm_enrich.py — 수집된 항목을 Codex 구독으로 보강한다.
 
-daily_digest.py 가 OPENAI_API_KEY 환경변수를 발견하면 자동으로 사용한다.
-키가 없으면 이 모듈은 건너뛰고 기존 영어 단어 매칭으로 동작한다.
+daily_digest.py 가 Codex CLI를 발견하면 자동으로 사용한다.
+CLI가 없거나 IDEA_LLM_MODE=off이면 이 모듈은 건너뛰고 기존 영어 단어 매칭으로 동작한다.
 
 파이프라인:
   1) translate_batch() — 영어 제목/설명 → 한국어 한 줄 요약 + 한국어 검색 키워드 + 분야
   2) 그 키워드로 한국 앱스토어 + 네이버 검색 (daily_digest 쪽 함수 사용)
   3) judge_batch()     — 검색 결과를 보고 "국내에 이미 있나" 판정 + 근거
 
-국내 다이제스트와 같은 Responses API 클라이언트·모델·재시도 정책을 쓴다.
+국내 다이제스트와 같은 Codex 구독 클라이언트·모델·실패 정책을 쓴다.
 """
 
 import sys
 import idea_ladder
 
 
-def has_key():
-    return idea_ladder.has_key()
+def is_available():
+    return idea_ladder.is_available()
 
 
 def _call(system, payload, properties, *, require_all=True):
     item_schema = idea_ladder._object({"i": {"type": "integer"}, **properties})
     schema = idea_ladder._object({"rows": {"type": "array", "items": item_schema}})
-    with idea_ladder.make_client() as client:
-        data = idea_ladder.request_json(client, system, payload, schema, "low")
+    client = idea_ladder.make_client()
+    data = idea_ladder.request_json(client, system, payload, schema, "low")
     return idea_ladder.valid_rows(data["rows"], len(payload), item_schema,
                                   require_all=require_all)
 

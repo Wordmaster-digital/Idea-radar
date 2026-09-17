@@ -175,10 +175,10 @@ class ReportTests(unittest.TestCase):
         self.assertIn("신규 아이템이 없습니다", "\n".join(lines))
         self.assertEqual(record, {"urls": [], "apps": [], "names": []})
 
-    def test_without_key_lists_raw_items(self):
+    def test_without_client_lists_raw_items(self):
         lines, record = self.build([fixtures.news_item("빨래톡 등장", "https://a.example/1")], None)
         text = "\n".join(lines)
-        self.assertIn(kr_digest.NOTE_NO_KEY, text)
+        self.assertIn(kr_digest.NOTE_NO_LLM, text)
         self.assertIn("빨래톡 등장", text)
         self.assertEqual(record["urls"], [])
 
@@ -228,7 +228,7 @@ class MainTests(unittest.TestCase):
         return fixtures.MEDIA_XML
 
     def run_main(self, argv, webhook="https://discord.example/hook", fetcher=None, fail_send=False,
-                 api_key="", client_factory=None):
+                 llm=False, client_factory=None):
         @contextlib.contextmanager
         def opener(req, timeout=0):
             if fail_send:
@@ -236,8 +236,9 @@ class MainTests(unittest.TestCase):
             self.sent.append(json.loads(req.data.decode("utf-8")))
             yield SimpleNamespace(status=204)
 
-        env = {"OPENAI_API_KEY": api_key, "DISCORD_WEBHOOK_URL": webhook}
-        with patch.dict(os.environ, env), contextlib.redirect_stderr(io.StringIO()), \
+        env = {"IDEA_LLM_MODE": "codex" if llm else "off", "DISCORD_WEBHOOK_URL": webhook}
+        with patch.dict(os.environ, env), patch.object(idea_ladder, "is_available", return_value=llm), \
+             contextlib.redirect_stderr(io.StringIO()), \
              contextlib.redirect_stdout(io.StringIO()) as out:
             code = kr_digest.main(argv, now=NOW, fetcher=fetcher or self.fetcher,
                                   client_factory=client_factory,
@@ -255,6 +256,13 @@ class MainTests(unittest.TestCase):
     def test_missing_webhook_fails(self):
         code, _ = self.run_main(["--state", self.state_path], webhook="")
         self.assertEqual(code, 1)
+
+    def test_no_llm_flag_skips_client_even_when_available(self):
+        with patch.object(idea_ladder, "make_client") as factory:
+            code, _ = self.run_main(["--dry-run", "--no-llm", "--state", self.state_path], llm=True)
+        self.assertEqual(code, 0)
+        factory.assert_not_called()
+        self.assertEqual(self.sent, [])
 
     def test_all_sources_failing_returns_error(self):
         def boom(url):
@@ -279,18 +287,18 @@ class MainTests(unittest.TestCase):
         with open(self.state_path, encoding="utf-8") as saved:
             self.assertEqual(json.load(saved), seen_state.empty_state())
 
-    def test_missing_key_never_initializes_client(self):
+    def test_disabled_llm_never_initializes_client(self):
         with patch.object(idea_ladder, "make_client") as factory:
             code, _ = self.run_main(["--state", self.state_path])
         self.assertEqual(code, 0)
         factory.assert_not_called()
-        self.assertIn(kr_digest.NOTE_NO_KEY, self.sent[0]["content"])
+        self.assertIn(kr_digest.NOTE_NO_LLM, self.sent[0]["content"])
         self.assert_no_seen_keys()
 
     def test_client_initialization_failure_sends_raw_and_records_nothing(self):
         with patch.object(idea_ladder, "make_client",
                           side_effect=idea_ladder.LadderError("초기화 실패")):
-            code, _ = self.run_main(["--state", self.state_path], api_key="test-key")
+            code, _ = self.run_main(["--state", self.state_path], llm=True)
         self.assertEqual(code, 0)
         self.assertIn(kr_digest.NOTE_CLIENT_FAIL, self.sent[0]["content"])
         self.assert_no_seen_keys()
@@ -301,27 +309,26 @@ class MainTests(unittest.TestCase):
             with self.subTest(kwargs=kwargs):
                 client, _ = fake_client(**kwargs)
                 self.sent.clear()
-                code, _ = self.run_main(["--state", self.state_path], api_key="test-key",
+                code, _ = self.run_main(["--state", self.state_path], llm=True,
                                          client_factory=lambda: client)
                 self.assertEqual(code, 0)
                 self.assertIn(kr_digest.NOTE_CARD_FAIL, self.sent[0]["content"])
                 self.assert_no_seen_keys()
 
-    def test_openai_success_runs_both_stages_and_records_keys(self):
+    def test_codex_success_runs_both_stages_and_records_keys(self):
         client, responses = fake_client()
-        original_create = responses.create
+        original_generate = responses.generate
 
-        def create(**kwargs):
-            payload = json.loads(kwargs["input"][0]["content"])
+        def generate(system, payload, schema, effort):
             if isinstance(payload, list):
                 data = {"cards": [fixtures.card(i, f"앱{i}") for i in range(len(payload))]}
             else:
                 data = {"ideas": [fixtures.idea(i) for i in range(len(payload["items"]))]}
             responses.text = json.dumps(data)
-            return original_create(**kwargs)
+            return original_generate(system, payload, schema, effort)
 
-        responses.create = create
-        code, _ = self.run_main(["--state", self.state_path], api_key="test-key",
+        responses.generate = generate
+        code, _ = self.run_main(["--state", self.state_path], llm=True,
                                  client_factory=lambda: client)
         self.assertEqual(code, 0)
         self.assertEqual(len(responses.calls), 2)
@@ -330,21 +337,20 @@ class MainTests(unittest.TestCase):
         self.assertTrue(state["urls"])
         self.assertTrue(state["names"])
 
-    def test_openai_idea_failure_keeps_cards_without_recording(self):
+    def test_codex_idea_failure_keeps_cards_without_recording(self):
         client, responses = fake_client()
-        original_create = responses.create
+        original_generate = responses.generate
 
-        def create(**kwargs):
-            payload = json.loads(kwargs["input"][0]["content"])
+        def generate(system, payload, schema, effort):
             if isinstance(payload, list):
                 responses.text = json.dumps({"cards": [
                     fixtures.card(i, f"앱{i}") for i in range(len(payload))]})
             else:
                 responses.status = "incomplete"
-            return original_create(**kwargs)
+            return original_generate(system, payload, schema, effort)
 
-        responses.create = create
-        code, _ = self.run_main(["--state", self.state_path], api_key="test-key",
+        responses.generate = generate
+        code, _ = self.run_main(["--state", self.state_path], llm=True,
                                  client_factory=lambda: client)
         self.assertEqual(code, 0)
         self.assertIn(kr_digest.NOTE_IDEA_FAIL, self.sent[0]["content"])
