@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""idea_ladder.py — Claude로 아이템 카드와 그늘로식 보완 아이디어를 만든다.
+"""idea_ladder.py — OpenAI로 아이템 카드와 그늘로식 보완 아이디어를 만든다.
 
 두 단계 모두 구조화 출력(JSON 스키마)을 강제하고, 필수 필드가 빠진 항목은 버린다.
 실패는 LadderError 하나로 모아, 호출 쪽이 저하 모드로 넘어가게 한다.
@@ -10,10 +10,10 @@ import json
 import os
 import sys
 
-DEFAULT_MODEL = "claude-opus-5"
-FALLBACK_MODELS = {"claude-opus-5", "claude-fable-5-1"}
-FALLBACK_BETA = "server-side-fallback-2026-07-01"
-MAX_TOKENS = 32000
+DEFAULT_MODEL = "gpt-5.6-sol"
+MAX_OUTPUT_TOKENS = 32000
+REQUEST_TIMEOUT = 120.0
+MAX_RETRIES = 2
 
 
 class LadderError(RuntimeError):
@@ -21,7 +21,7 @@ class LadderError(RuntimeError):
 
 
 def has_key():
-    return bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
+    return bool(os.environ.get("OPENAI_API_KEY", "").strip())
 
 
 def model_name():
@@ -29,10 +29,14 @@ def model_name():
 
 
 def make_client():
-    """SDK는 여기서만 import한다. 덕분에 테스트는 SDK 없이 돈다."""
-    import anthropic
+    """SDK를 지연 import해 키 없는 실행은 SDK 없이도 동작하게 한다."""
+    try:
+        from openai import OpenAI
 
-    return anthropic.Anthropic()
+        return OpenAI(api_key=os.environ.get("OPENAI_API_KEY", "").strip(),
+                      timeout=REQUEST_TIMEOUT, max_retries=MAX_RETRIES)
+    except Exception as e:
+        raise LadderError(f"OpenAI 클라이언트 초기화 실패: {type(e).__name__}") from e
 
 
 def _object(properties):
@@ -57,7 +61,6 @@ CARD_ITEM = _object({
     "kw": STR_LIST,
 })
 CARD_SCHEMA = _object({"cards": {"type": "array", "items": CARD_ITEM}})
-CARD_FIELDS = tuple(CARD_ITEM["properties"])
 
 IDEA_ITEM = _object({
     "i": {"type": "integer"},
@@ -71,7 +74,6 @@ IDEA_ITEM = _object({
     "verdict_reason": STR,
 })
 IDEA_SCHEMA = _object({"ideas": {"type": "array", "items": IDEA_ITEM}})
-IDEA_FIELDS = tuple(IDEA_ITEM["properties"])
 
 CARD_SYSTEM = """너는 한국 뉴스 제목과 앱 차트에서 '창업 아이템'만 골라 카드로 정리한다.
 
@@ -139,62 +141,94 @@ IDEA_SYSTEM = """너는 대학생 창업팀을 위해, 오늘 국내에 나온 �
 - 대학생 팀이 2~4주 안에 소프트웨어로 시작할 수 있어야 GO다."""
 
 
-def _request(client, system, payload, schema, effort):
-    kwargs = {
-        "model": model_name(),
-        "max_tokens": MAX_TOKENS,
-        "system": system,
-        "messages": [{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
-        "output_config": {"effort": effort,
-                          "format": {"type": "json_schema", "schema": schema}},
-    }
-    if kwargs["model"] in FALLBACK_MODELS:
-        kwargs["betas"] = [FALLBACK_BETA]
-        kwargs["fallbacks"] = "default"
+def request_json(client, system, payload, schema, effort):
+    """한 모델의 Responses API만 사용한다. 일시적 오류 재시도는 SDK에 맡긴다."""
     try:
-        with client.beta.messages.stream(**kwargs) as stream:
-            response = stream.get_final_message()
+        response = client.responses.create(
+            model=model_name(),
+            max_output_tokens=MAX_OUTPUT_TOKENS,
+            instructions=system,
+            input=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
+            reasoning={"effort": effort},
+            text={"format": {"type": "json_schema", "name": "idea_radar",
+                             "strict": True, "schema": schema}},
+            store=False,
+        )
     except Exception as e:
         status = getattr(e, "status_code", "")
-        raise LadderError(f"{type(e).__name__} {status}: {e}".strip()) from e
-    if response.stop_reason == "refusal":
-        raise LadderError("안전 분류기가 요청을 거절함")
-    text = next((b.text for b in response.content if b.type == "text"), "")
+        # API 오류 본문에는 키나 입력이 포함될 수 있어 종류와 상태만 기록한다.
+        raise LadderError(f"OpenAI 요청 실패: {type(e).__name__} {status}".strip()) from e
+    if response.status != "completed" or response.error is not None:
+        reason = getattr(response.incomplete_details, "reason", None)
+        raise LadderError(f"OpenAI 응답 미완료: {response.status} ({reason or 'unknown'})")
+    for item in response.output:
+        if item.type == "message" and any(b.type == "refusal" for b in item.content):
+            raise LadderError("모델이 요청을 거절함")
+    if not response.output_text.strip():
+        raise LadderError("OpenAI 응답에 텍스트가 없음")
     try:
-        return json.loads(text)
+        data = json.loads(response.output_text)
     except ValueError as e:
-        raise LadderError(f"JSON 해석 실패({response.stop_reason}): {e}") from e
+        raise LadderError("OpenAI 응답 JSON 해석 실패") from e
+    if (not isinstance(data, dict) or set(data) != set(schema["properties"])
+            or any(not isinstance(data[key], list) for key in schema["properties"])):
+        raise LadderError("OpenAI 응답 목록 형식 오류")
+    usage = response.usage
+    if usage is not None:
+        print(f"[LLM] model={response.model} input_tokens={usage.input_tokens} "
+              f"output_tokens={usage.output_tokens}", file=sys.stderr)
+    return data
 
 
-def _valid_rows(rows, limit, fields):
-    """필수 필드가 다 있고 i가 범위 안인 행만 남긴다."""
+def _valid_value(value, spec):
+    kind = spec["type"]
+    if kind == "array":
+        return isinstance(value, list) and all(_valid_value(v, spec["items"]) for v in value)
+    expected = {"string": str, "integer": int, "boolean": bool}[kind]
+    return type(value) is expected and ("enum" not in spec or value in spec["enum"])
+
+
+def valid_rows(rows, limit, item_schema, *, require_all=False):
+    """필드 타입·필수 항목·번호를 검사하고 입력 누락은 단계 전체 실패로 처리한다."""
     out = []
+    seen = set()
+    properties = item_schema["properties"]
     for row in rows or []:
-        if not isinstance(row, dict) or not all(f in row for f in fields):
-            print(f"[LLM] 필드가 빠진 항목을 버림: {str(row)[:80]}", file=sys.stderr)
+        if (not isinstance(row, dict) or set(row) != set(properties)
+                or not all(_valid_value(row[f], spec) for f, spec in properties.items())):
+            print("[LLM] 필드 형식이 잘못된 항목을 버림", file=sys.stderr)
             continue
-        if not isinstance(row["i"], int) or not 0 <= row["i"] < limit:
+        if not 0 <= row["i"] < limit:
             print(f"[LLM] 번호가 범위 밖이라 버림: {row.get('i')}", file=sys.stderr)
             continue
+        if row["i"] in seen:
+            raise LadderError("OpenAI 응답에 중복 번호가 있음")
+        seen.add(row["i"])
         out.append(row)
+    if require_all and len(seen) != limit:
+        raise LadderError("OpenAI 응답에서 일부 입력 항목이 누락됨")
     return out
 
 
 def make_cards(client, items):
     """수집 항목에서 창업 아이템 카드를 만든다."""
+    if not items:
+        return []
     payload = [{"i": n, "title": it["title"], "desc": it.get("desc", ""),
                 "outlets": sorted(it.get("outlets", [])), "chart_rank": it.get("chart_rank")}
                for n, it in enumerate(items)]
-    data = _request(client, CARD_SYSTEM, payload, CARD_SCHEMA, "low")
-    return _valid_rows(data.get("cards"), len(items), CARD_FIELDS)
+    data = request_json(client, CARD_SYSTEM, payload, CARD_SCHEMA, "low")
+    return valid_rows(data["cards"], len(items), CARD_ITEM, require_all=True)
 
 
 def make_ideas(client, cards, today):
     """선정한 카드마다 보완 아이디어 1개를 검토한다."""
+    if not cards:
+        return []
     payload = {"today": today, "items": [
         {"i": n, "name": c["name"], "what": c["what"], "who": c["who"], "stage": c["stage"],
          "stage_reason": c["stage_reason"], "traction": c["traction"],
          "outlets": len(c.get("outlets", [])), "evidence": list(c.get("evidence", []))}
         for n, c in enumerate(cards)]}
-    data = _request(client, IDEA_SYSTEM, payload, IDEA_SCHEMA, "high")
-    return _valid_rows(data.get("ideas"), len(cards), IDEA_FIELDS)
+    data = request_json(client, IDEA_SYSTEM, payload, IDEA_SCHEMA, "high")
+    return valid_rows(data["ideas"], len(cards), IDEA_ITEM, require_all=True)

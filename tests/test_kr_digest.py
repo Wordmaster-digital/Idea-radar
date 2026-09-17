@@ -8,6 +8,7 @@ import unittest
 from datetime import date
 from types import SimpleNamespace
 from unittest.mock import patch
+from test_idea_ladder import fake_client
 
 import fixtures
 import idea_ladder
@@ -226,7 +227,8 @@ class MainTests(unittest.TestCase):
             return fixtures.APPSTORE_JSON
         return fixtures.MEDIA_XML
 
-    def run_main(self, argv, webhook="https://discord.example/hook", fetcher=None, fail_send=False):
+    def run_main(self, argv, webhook="https://discord.example/hook", fetcher=None, fail_send=False,
+                 api_key="", client_factory=None):
         @contextlib.contextmanager
         def opener(req, timeout=0):
             if fail_send:
@@ -234,10 +236,11 @@ class MainTests(unittest.TestCase):
             self.sent.append(json.loads(req.data.decode("utf-8")))
             yield SimpleNamespace(status=204)
 
-        env = {"ANTHROPIC_API_KEY": "", "DISCORD_WEBHOOK_URL": webhook}
+        env = {"OPENAI_API_KEY": api_key, "DISCORD_WEBHOOK_URL": webhook}
         with patch.dict(os.environ, env), contextlib.redirect_stderr(io.StringIO()), \
              contextlib.redirect_stdout(io.StringIO()) as out:
             code = kr_digest.main(argv, now=NOW, fetcher=fetcher or self.fetcher,
+                                  client_factory=client_factory,
                                   opener=opener, sleep=lambda seconds: None,
                                   evidence_fn=lambda card: card.setdefault("evidence", []))
         return code, out.getvalue()
@@ -271,6 +274,82 @@ class MainTests(unittest.TestCase):
         code, _ = self.run_main(["--state", self.state_path], fail_send=True)
         self.assertEqual(code, 1)
         self.assertFalse(os.path.exists(self.state_path))
+
+    def assert_no_seen_keys(self):
+        with open(self.state_path, encoding="utf-8") as saved:
+            self.assertEqual(json.load(saved), seen_state.empty_state())
+
+    def test_missing_key_never_initializes_client(self):
+        with patch.object(idea_ladder, "make_client") as factory:
+            code, _ = self.run_main(["--state", self.state_path])
+        self.assertEqual(code, 0)
+        factory.assert_not_called()
+        self.assertIn(kr_digest.NOTE_NO_KEY, self.sent[0]["content"])
+        self.assert_no_seen_keys()
+
+    def test_client_initialization_failure_sends_raw_and_records_nothing(self):
+        with patch.object(idea_ladder, "make_client",
+                          side_effect=idea_ladder.LadderError("초기화 실패")):
+            code, _ = self.run_main(["--state", self.state_path], api_key="test-key")
+        self.assertEqual(code, 0)
+        self.assertIn(kr_digest.NOTE_CLIENT_FAIL, self.sent[0]["content"])
+        self.assert_no_seen_keys()
+
+    def test_real_card_error_path_sends_raw_and_records_nothing(self):
+        for kwargs in ({"error": RuntimeError("API 실패")}, {"text": "[]"},
+                       {"text": '{"cards": []}'}, {"status": "incomplete"}, {"refusal": True}):
+            with self.subTest(kwargs=kwargs):
+                client, _ = fake_client(**kwargs)
+                self.sent.clear()
+                code, _ = self.run_main(["--state", self.state_path], api_key="test-key",
+                                         client_factory=lambda: client)
+                self.assertEqual(code, 0)
+                self.assertIn(kr_digest.NOTE_CARD_FAIL, self.sent[0]["content"])
+                self.assert_no_seen_keys()
+
+    def test_openai_success_runs_both_stages_and_records_keys(self):
+        client, responses = fake_client()
+        original_create = responses.create
+
+        def create(**kwargs):
+            payload = json.loads(kwargs["input"][0]["content"])
+            if isinstance(payload, list):
+                data = {"cards": [fixtures.card(i, f"앱{i}") for i in range(len(payload))]}
+            else:
+                data = {"ideas": [fixtures.idea(i) for i in range(len(payload["items"]))]}
+            responses.text = json.dumps(data)
+            return original_create(**kwargs)
+
+        responses.create = create
+        code, _ = self.run_main(["--state", self.state_path], api_key="test-key",
+                                 client_factory=lambda: client)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(responses.calls), 2)
+        self.assertIn("보완 아이디어", self.sent[0]["content"])
+        state = seen_state.load(self.state_path, NOW.astimezone(kr_digest.KST).date())
+        self.assertTrue(state["urls"])
+        self.assertTrue(state["names"])
+
+    def test_openai_idea_failure_keeps_cards_without_recording(self):
+        client, responses = fake_client()
+        original_create = responses.create
+
+        def create(**kwargs):
+            payload = json.loads(kwargs["input"][0]["content"])
+            if isinstance(payload, list):
+                responses.text = json.dumps({"cards": [
+                    fixtures.card(i, f"앱{i}") for i in range(len(payload))]})
+            else:
+                responses.status = "incomplete"
+            return original_create(**kwargs)
+
+        responses.create = create
+        code, _ = self.run_main(["--state", self.state_path], api_key="test-key",
+                                 client_factory=lambda: client)
+        self.assertEqual(code, 0)
+        self.assertIn(kr_digest.NOTE_IDEA_FAIL, self.sent[0]["content"])
+        self.assertIn("앱0", self.sent[0]["content"])
+        self.assert_no_seen_keys()
 
 
 if __name__ == "__main__":

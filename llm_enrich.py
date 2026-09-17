@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-llm_enrich.py — 수집된 항목을 Claude로 보강한다.
+llm_enrich.py — 수집된 항목을 OpenAI로 보강한다.
 
-daily_digest.py 가 ANTHROPIC_API_KEY 환경변수를 발견하면 자동으로 사용한다.
+daily_digest.py 가 OPENAI_API_KEY 환경변수를 발견하면 자동으로 사용한다.
 키가 없으면 이 모듈은 건너뛰고 기존 영어 단어 매칭으로 동작한다.
 
 파이프라인:
@@ -11,55 +11,24 @@ daily_digest.py 가 ANTHROPIC_API_KEY 환경변수를 발견하면 자동으로 
   2) 그 키워드로 한국 앱스토어 + 네이버 검색 (daily_digest 쪽 함수 사용)
   3) judge_batch()     — 검색 결과를 보고 "국내에 이미 있나" 판정 + 근거
 
-API 호출은 회당 2번뿐이라 하루 비용은 수십 원 수준이다.
+국내 다이제스트와 같은 Responses API 클라이언트·모델·재시도 정책을 쓴다.
 """
 
-import json
-import os
-import re
 import sys
-import urllib.request
-
-API_URL = "https://api.anthropic.com/v1/messages"
-MODEL = "claude-sonnet-4-6"
-TIMEOUT = 120
+import idea_ladder
 
 
 def has_key():
-    return bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
+    return idea_ladder.has_key()
 
 
-def _call(system, user, max_tokens=4000):
-    key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-    if not key:
-        raise RuntimeError("ANTHROPIC_API_KEY 없음")
-    body = json.dumps({
-        "model": MODEL,
-        "max_tokens": max_tokens,
-        "system": system,
-        "messages": [{"role": "user", "content": user}],
-    }).encode("utf-8")
-    req = urllib.request.Request(API_URL, data=body, headers={
-        "content-type": "application/json",
-        "x-api-key": key,
-        "anthropic-version": "2023-06-01",
-    })
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-        data = json.loads(r.read().decode("utf-8"))
-    return "".join(b.get("text", "") for b in data.get("content", [])
-                   if b.get("type") == "text")
-
-
-def _parse_json(text):
-    """모델이 코드펜스를 붙이거나 앞뒤로 말을 덧붙여도 JSON 배열만 뽑아낸다."""
-    text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.M).strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        m = re.search(r"\[.*\]", text, re.S)
-        if m:
-            return json.loads(m.group(0))
-        raise
+def _call(system, payload, properties, *, require_all=True):
+    item_schema = idea_ladder._object({"i": {"type": "integer"}, **properties})
+    schema = idea_ladder._object({"rows": {"type": "array", "items": item_schema}})
+    with idea_ladder.make_client() as client:
+        data = idea_ladder.request_json(client, system, payload, schema, "low")
+    return idea_ladder.valid_rows(data["rows"], len(payload), item_schema,
+                                  require_all=require_all)
 
 
 # ------------------------------------------------------------ 1단계: 번역
@@ -73,9 +42,9 @@ TRANSLATE_SYS = """너는 해외 제품·프로젝트 목록을 한국 시장 �
       예) "Fastpotify" → ["음악 스트리밍 앱", "스포티파이 클라이언트"]
 - cat: 다음 중 하나 — 개발도구 / 생산성 / 소비자앱 / 하드웨어 / 디자인 / 헬스케어 / 금융 / 교육 / 기타
 
-출력은 JSON 배열만. 설명이나 코드펜스를 붙이지 마라.
+출력은 rows 배열을 가진 JSON 객체만. 설명이나 코드펜스를 붙이지 마라.
 입력 순서와 출력 순서를 반드시 일치시켜라.
-형식: [{"i":0,"ko":"...","kw":["...","..."],"cat":"..."}, ...]"""
+형식: {"rows": [{"i":0,"ko":"...","kw":["...","..."],"cat":"..."}, ...]}"""
 
 
 def translate_batch(items):
@@ -85,8 +54,9 @@ def translate_batch(items):
     payload = [{"i": n, "title": it["title"][:140], "desc": (it.get("extra") or "")[:160]}
                for n, it in enumerate(items)]
     try:
-        raw = _call(TRANSLATE_SYS, json.dumps(payload, ensure_ascii=False))
-        for row in _parse_json(raw):
+        rows = _call(TRANSLATE_SYS, payload, {
+            "ko": idea_ladder.STR, "kw": idea_ladder.STR_LIST, "cat": idea_ladder.STR})
+        for row in rows:
             n = row.get("i")
             if isinstance(n, int) and 0 <= n < len(items):
                 items[n]["ko"] = (row.get("ko") or "").strip()
@@ -122,11 +92,11 @@ SHORTLIST_SYS = """너는 대학생 창업팀에게 오늘 목록에서 '실제�
 - who: 한국에서 돈을 낼 사람. "세입자" 같은 뭉뚱그린 답 금지. 구체적 집단.
 - risk: 가장 큰 약점 한 줄. 솔직하게. 약점이 치명적이면 애초에 고르지 마라.
 
-기준을 통과하는 게 없으면 빈 배열 []을 반환하라.
+기준을 통과하는 게 없으면 {"rows": []}을 반환하라.
 억지로 채우지 마라. 0개나 1개가 정상이다. 최대 3개.
 
-출력은 JSON 배열만. 형식:
-[{"i":0,"what":"...","axis":"...","who":"...","risk":"..."}]"""
+출력은 rows 배열을 가진 JSON 객체만. 형식:
+{"rows": [{"i":0,"what":"...","axis":"...","who":"...","risk":"..."}]}"""
 
 
 def shortlist(items, limit=3):
@@ -140,9 +110,9 @@ def shortlist(items, limit=3):
                 "verdict": it.get("verdict", "")}
                for n, it in enumerate(items)]
     try:
-        raw = _call(SHORTLIST_SYS, json.dumps(payload, ensure_ascii=False),
-                    max_tokens=2000)
-        rows = _parse_json(raw)
+        rows = _call(SHORTLIST_SYS, payload,
+                     {key: idea_ladder.STR for key in ("what", "axis", "who", "risk")},
+                     require_all=False)
     except Exception as e:
         print(f"[LLM 후보선정] 실패: {e}", file=sys.stderr)
         return []
@@ -180,7 +150,7 @@ JUDGE_SYS = """너는 해외 아이디어가 한국에 이미 존재하는지 �
 이름이 비슷하다는 이유로 "있음"을 주지 마라. 하는 일이 같아야 한다.
 why 는 15자 이내 한국어. 근거가 된 서비스명이 있으면 그것을 써라.
 
-출력은 JSON 배열만. 형식: [{"i":0,"v":"없음","why":"..."}, ...]"""
+출력은 rows 배열을 가진 JSON 객체만. 형식: {"rows": [{"i":0,"v":"없음","why":"..."}, ...]}"""
 
 
 def judge_batch(items):
@@ -196,8 +166,10 @@ def judge_batch(items):
             "evidence": (it.get("evidence") or [])[:8],
         })
     try:
-        raw = _call(JUDGE_SYS, json.dumps(payload, ensure_ascii=False))
-        for row in _parse_json(raw):
+        rows = _call(JUDGE_SYS, payload, {
+            "v": {"type": "string", "enum": ["있음", "유사", "없음", "불명"]},
+            "why": idea_ladder.STR})
+        for row in rows:
             n = row.get("i")
             if isinstance(n, int) and 0 <= n < len(items):
                 items[n]["verdict"] = (row.get("v") or "불명").strip()
