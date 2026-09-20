@@ -168,17 +168,18 @@ class ReportTests(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()):
             return kr_digest.build_report(
                 items, state or seen_state.empty_state(), hours=24, today=TODAY,
-                client=client, evidence_fn=lambda card: card.setdefault("evidence", []))
+                client=client, evidence_fn=lambda card: card.setdefault("evidence", []),
+                research_fn=fixtures.research)
 
     def test_empty_day(self):
         lines, record = self.build([], None)
         self.assertIn("신규 아이템이 없습니다", "\n".join(lines))
         self.assertEqual(record, {"urls": [], "apps": [], "names": []})
 
-    def test_without_key_lists_raw_items(self):
+    def test_without_client_lists_raw_items(self):
         lines, record = self.build([fixtures.news_item("빨래톡 등장", "https://a.example/1")], None)
         text = "\n".join(lines)
-        self.assertIn(kr_digest.NOTE_NO_KEY, text)
+        self.assertIn(kr_digest.NOTE_NO_LLM, text)
         self.assertIn("빨래톡 등장", text)
         self.assertEqual(record["urls"], [])
 
@@ -191,9 +192,8 @@ class ReportTests(unittest.TestCase):
 
     def test_idea_failure_keeps_card_list(self):
         items = [fixtures.news_item("빨래톡 등장", "https://a.example/1")]
-        with patch.object(idea_ladder, "make_cards", return_value=[fixtures.card(0, "빨래톡")]), \
-             patch.object(idea_ladder, "make_ideas", side_effect=idea_ladder.LadderError("실패")):
-            lines, record = self.build(items, object())
+        with patch.object(idea_ladder, "make_cards", return_value=[fixtures.card(0, "빨래톡")]):
+            lines, record = self.build(items, fixtures.PipelineClient(fail="variants"))
         text = "\n".join(lines)
         self.assertIn(kr_digest.NOTE_IDEA_FAIL, text)
         self.assertIn("빨래톡", text)
@@ -202,11 +202,10 @@ class ReportTests(unittest.TestCase):
     def test_success_records_keys(self):
         items = [fixtures.news_item("빨래톡 등장", "https://a.example/1"), fixtures.app_item()]
         with patch.object(idea_ladder, "make_cards",
-                          return_value=[fixtures.card(0, "빨래톡"), fixtures.card(1, "빨래앱")]), \
-             patch.object(idea_ladder, "make_ideas", return_value=[fixtures.idea(0)]):
-            lines, record = self.build(items, object())
+                          return_value=[fixtures.card(0, "빨래톡"), fixtures.card(1, "빨래앱")]):
+            lines, record = self.build(items, fixtures.PipelineClient())
         text = "\n".join(lines)
-        self.assertIn("보완 아이디어", text)
+        self.assertIn("아이디어 개발 보고서", text)
         self.assertIn("국내 신규 아이템", text)
         self.assertEqual(record["apps"], ["111"])
         self.assertIn("https://a.example/1", record["urls"])
@@ -228,7 +227,7 @@ class MainTests(unittest.TestCase):
         return fixtures.MEDIA_XML
 
     def run_main(self, argv, webhook="https://discord.example/hook", fetcher=None, fail_send=False,
-                 api_key="", client_factory=None):
+                 llm=False, client_factory=None):
         @contextlib.contextmanager
         def opener(req, timeout=0):
             if fail_send:
@@ -236,13 +235,15 @@ class MainTests(unittest.TestCase):
             self.sent.append(json.loads(req.data.decode("utf-8")))
             yield SimpleNamespace(status=204)
 
-        env = {"OPENAI_API_KEY": api_key, "DISCORD_WEBHOOK_URL": webhook}
-        with patch.dict(os.environ, env), contextlib.redirect_stderr(io.StringIO()), \
+        env = {"IDEA_LLM_MODE": "codex" if llm else "off", "DISCORD_WEBHOOK_URL": webhook}
+        with patch.dict(os.environ, env), patch.object(idea_ladder, "is_available", return_value=llm), \
+             contextlib.redirect_stderr(io.StringIO()), \
              contextlib.redirect_stdout(io.StringIO()) as out:
             code = kr_digest.main(argv, now=NOW, fetcher=fetcher or self.fetcher,
                                   client_factory=client_factory,
                                   opener=opener, sleep=lambda seconds: None,
-                                  evidence_fn=lambda card: card.setdefault("evidence", []))
+                                  evidence_fn=lambda card: card.setdefault("evidence", []),
+                                  research_fn=fixtures.research)
         return code, out.getvalue()
 
     def test_dry_run_prints_without_saving_state(self):
@@ -255,6 +256,13 @@ class MainTests(unittest.TestCase):
     def test_missing_webhook_fails(self):
         code, _ = self.run_main(["--state", self.state_path], webhook="")
         self.assertEqual(code, 1)
+
+    def test_no_llm_flag_skips_client_even_when_available(self):
+        with patch.object(idea_ladder, "make_client") as factory:
+            code, _ = self.run_main(["--dry-run", "--no-llm", "--state", self.state_path], llm=True)
+        self.assertEqual(code, 0)
+        factory.assert_not_called()
+        self.assertEqual(self.sent, [])
 
     def test_all_sources_failing_returns_error(self):
         def boom(url):
@@ -279,18 +287,18 @@ class MainTests(unittest.TestCase):
         with open(self.state_path, encoding="utf-8") as saved:
             self.assertEqual(json.load(saved), seen_state.empty_state())
 
-    def test_missing_key_never_initializes_client(self):
+    def test_disabled_llm_never_initializes_client(self):
         with patch.object(idea_ladder, "make_client") as factory:
             code, _ = self.run_main(["--state", self.state_path])
         self.assertEqual(code, 0)
         factory.assert_not_called()
-        self.assertIn(kr_digest.NOTE_NO_KEY, self.sent[0]["content"])
+        self.assertIn(kr_digest.NOTE_NO_LLM, self.sent[0]["content"])
         self.assert_no_seen_keys()
 
     def test_client_initialization_failure_sends_raw_and_records_nothing(self):
         with patch.object(idea_ladder, "make_client",
                           side_effect=idea_ladder.LadderError("초기화 실패")):
-            code, _ = self.run_main(["--state", self.state_path], api_key="test-key")
+            code, _ = self.run_main(["--state", self.state_path], llm=True)
         self.assertEqual(code, 0)
         self.assertIn(kr_digest.NOTE_CLIENT_FAIL, self.sent[0]["content"])
         self.assert_no_seen_keys()
@@ -301,55 +309,72 @@ class MainTests(unittest.TestCase):
             with self.subTest(kwargs=kwargs):
                 client, _ = fake_client(**kwargs)
                 self.sent.clear()
-                code, _ = self.run_main(["--state", self.state_path], api_key="test-key",
+                code, _ = self.run_main(["--state", self.state_path], llm=True,
                                          client_factory=lambda: client)
                 self.assertEqual(code, 0)
                 self.assertIn(kr_digest.NOTE_CARD_FAIL, self.sent[0]["content"])
                 self.assert_no_seen_keys()
 
-    def test_openai_success_runs_both_stages_and_records_keys(self):
-        client, responses = fake_client()
-        original_create = responses.create
-
-        def create(**kwargs):
-            payload = json.loads(kwargs["input"][0]["content"])
-            if isinstance(payload, list):
-                data = {"cards": [fixtures.card(i, f"앱{i}") for i in range(len(payload))]}
-            else:
-                data = {"ideas": [fixtures.idea(i) for i in range(len(payload["items"]))]}
-            responses.text = json.dumps(data)
-            return original_create(**kwargs)
-
-        responses.create = create
-        code, _ = self.run_main(["--state", self.state_path], api_key="test-key",
+    def test_codex_success_runs_all_five_stages_and_records_keys(self):
+        client = fixtures.PipelineClient()
+        code, _ = self.run_main(["--state", self.state_path], llm=True,
                                  client_factory=lambda: client)
         self.assertEqual(code, 0)
-        self.assertEqual(len(responses.calls), 2)
-        self.assertIn("보완 아이디어", self.sent[0]["content"])
+        self.assertEqual([c["name"] for c in client.calls],
+                         ["cards", "assessments", "variants", "reviews", "plans"])
+        text = "\n".join(m["content"] for m in self.sent)
+        self.assertIn("피벗·파생안 비교", text)
+        self.assertIn("통과 기준(제안)", text)
+        self.assertTrue(all(len(m["content"]) <= 1900 for m in self.sent))
         state = seen_state.load(self.state_path, NOW.astimezone(kr_digest.KST).date())
         self.assertTrue(state["urls"])
         self.assertTrue(state["names"])
 
-    def test_openai_idea_failure_keeps_cards_without_recording(self):
+    def test_codex_idea_failure_keeps_cards_without_recording(self):
         client, responses = fake_client()
-        original_create = responses.create
+        original_generate = responses.generate
 
-        def create(**kwargs):
-            payload = json.loads(kwargs["input"][0]["content"])
+        def generate(system, payload, schema, effort):
             if isinstance(payload, list):
                 responses.text = json.dumps({"cards": [
                     fixtures.card(i, f"앱{i}") for i in range(len(payload))]})
             else:
                 responses.status = "incomplete"
-            return original_create(**kwargs)
+            return original_generate(system, payload, schema, effort)
 
-        responses.create = create
-        code, _ = self.run_main(["--state", self.state_path], api_key="test-key",
+        responses.generate = generate
+        code, _ = self.run_main(["--state", self.state_path], llm=True,
                                  client_factory=lambda: client)
         self.assertEqual(code, 0)
         self.assertIn(kr_digest.NOTE_IDEA_FAIL, self.sent[0]["content"])
         self.assertIn("앱0", self.sent[0]["content"])
         self.assert_no_seen_keys()
+
+    def test_each_development_failure_keeps_previous_analysis_and_no_seen_keys(self):
+        for stage in ("assessments", "variants", "reviews", "plans"):
+            with self.subTest(stage=stage):
+                self.sent.clear()
+                code, _ = self.run_main(["--state", self.state_path], llm=True,
+                                         client_factory=lambda: fixtures.PipelineClient(fail=stage))
+                self.assertEqual(code, 0)
+                text = "\n".join(m["content"] for m in self.sent)
+                self.assertIn(kr_digest.NOTE_IDEA_FAIL, text)
+                self.assertIn("국내 신규 아이템", text)
+                if stage in ("reviews", "plans"):
+                    self.assertIn("파생안0", text)
+                self.assert_no_seen_keys()
+
+    def test_full_report_saved_in_dry_run_without_delivery_or_seen_state(self):
+        from pathlib import Path
+        report = Path(self.dir.name) / "reports" / "preview.md"
+        code, _ = self.run_main(["--dry-run", "--state", self.state_path, "--report", str(report)],
+                                 llm=True, client_factory=fixtures.PipelineClient)
+        self.assertEqual(code, 0)
+        text = report.read_text(encoding="utf-8")
+        for token in ("미리보기", "피벗·파생", "반증 조건", "수요 검증 실험", "출처와 확인 범위"):
+            self.assertIn(token, text)
+        self.assertFalse(os.path.exists(self.state_path))
+        self.assertEqual(self.sent, [])
 
 
 if __name__ == "__main__":

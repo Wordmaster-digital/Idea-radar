@@ -14,10 +14,14 @@ import re
 import sys
 import time
 import urllib.request
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import idea_ladder
+import idea_development
+import development_report
+import market_evidence
 import kr_sources
 import seen_state
 from daily_digest import UA, gather_evidence
@@ -87,7 +91,7 @@ def group_items(items, state):
 
 
 def _rank_key(card):
-    """보도 매체 수 → 성과 수치 유무 → 차트 앱 → 차트 순위 → 최신 순."""
+    """목록 표시 순서. 분석 후보는 이 순서로 자르지 않고 전부 비교한다."""
     return (-len(card["outlets"]), not card["traction"], card["chart_rank"] is None,
             card["chart_rank"] or 999, -card["published"].timestamp())
 
@@ -107,7 +111,9 @@ def merge_cards(groups, cards, state):
             merged[key] = {**card, "url": group["url"], "urls": list(group["urls"]),
                            "outlets": set(group["outlets"]), "source": group["source"],
                            "chart_rank": group.get("chart_rank"),
-                           "app_id": group.get("app_id"), "published": group["published"]}
+                           "app_id": group.get("app_id"), "published": group["published"],
+                           "headline": group["title"], "description": group.get("desc", ""),
+                           "source_published": group["published"]}
             continue
         item["outlets"] |= group["outlets"]
         item["urls"] += [u for u in group["urls"] if u not in item["urls"]]
@@ -118,6 +124,8 @@ def merge_cards(groups, cards, state):
             item["chart_rank"], item["app_id"] = rank, group.get("app_id")
         if group["source"] == "media" and item["source"] != "media":
             item["url"], item["source"] = group["url"], "media"
+            item.update(headline=group["title"], description=group.get("desc", ""),
+                        source_published=group["published"])
         item["published"] = max(item["published"], group["published"])
     return sorted(merged.values(), key=_rank_key)
 
@@ -131,10 +139,10 @@ def split_ideas(ideas):
     return full[:MAX_FULL_IDEAS], stops[:MAX_STOP_IDEAS]
 
 
-NOTE_NO_KEY = "⚠ OPENAI_API_KEY가 없어 아이템 카드와 아이디어를 생략했습니다."
-NOTE_CLIENT_FAIL = "⚠ OpenAI 초기화에 실패해 아이템 카드와 아이디어를 생략했습니다."
+NOTE_NO_LLM = "⚠ Codex 분석이 비활성화되어 아이템 카드와 아이디어를 생략했습니다."
+NOTE_CLIENT_FAIL = "⚠ ChatGPT 구독 로그인 확인에 실패해 아이템 카드와 아이디어를 생략했습니다."
 NOTE_CARD_FAIL = "⚠ 아이템 카드 생성에 실패해 아이디어를 생략했습니다."
-NOTE_IDEA_FAIL = "⚠ 보완 아이디어 생성에 실패했습니다."
+NOTE_IDEA_FAIL = "⚠ 아이디어 개발을 끝까지 완료하지 못했습니다. 완료된 분석과 아이템 목록을 표시합니다."
 
 
 def _idea_block(n, idea, source):
@@ -256,10 +264,10 @@ def _record(groups, names):
 
 
 def build_report(items, state, *, hours, today, client, evidence_fn=gather_evidence,
-                 no_client_note=NOTE_NO_KEY):
+                 no_client_note=NOTE_NO_LLM, research_fn=market_evidence.collect, full_report=None):
     """수집 항목으로 발송할 줄 목록과 기록할 키를 만든다.
 
-    저하 모드(키 없음·LLM 실패)에서는 새 키를 기록하지 않는다. 키를 고친 뒤
+    저하 모드(Codex 미설정·LLM 실패)에서는 새 키를 기록하지 않는다. 설정을 고친 뒤
     같은 날 다시 실행해도 같은 항목으로 아이디어를 만들 수 있게 하기 위해서다.
     """
     empty = {"urls": [], "apps": [], "names": []}
@@ -276,19 +284,14 @@ def build_report(items, state, *, hours, today, client, evidence_fn=gather_evide
         return render_raw(hours, groups, NOTE_CARD_FAIL), empty
 
     merged = merge_cards(groups, cards, state)
-    selected = merged[:MAX_SELECTED]
-    for card in selected:
-        evidence_fn(card)
-
-    lines, record = [], empty
-    try:
-        ideas = idea_ladder.make_ideas(client, selected, date_str) if selected else []
-        full, stops = split_ideas(ideas)
-        lines += render_ideas(date_str, full, stops, selected)
-        record = _record(groups, [card["name"] for card in merged])
-    except idea_ladder.LadderError as e:
-        print(f"[아이디어] 실패: {e}", file=sys.stderr)
-        lines.append(NOTE_IDEA_FAIL)
+    development = idea_development.run(client, merged, date_str,
+                                       research_fn=research_fn, evidence_fn=evidence_fn)
+    lines = development_report.render(development, date_str)
+    if not development["complete"]:
+        lines.insert(0, NOTE_IDEA_FAIL)
+    record = _record(groups, [card["name"] for card in merged]) if development["complete"] else empty
+    if full_report is not None:
+        full_report.extend(development_report.render(development, date_str, full=True) + render_cards(hours, merged))
     lines += render_cards(hours, merged)
     return lines, record
 
@@ -297,9 +300,11 @@ def parse_args(argv):
     parser = argparse.ArgumentParser(description="국내 신규 아이템 레이더와 보완 아이디어")
     parser.add_argument("--dry-run", action="store_true",
                         help="디스코드로 보내지 않고 화면에 출력한다 (기록 저장 안 함)")
+    parser.add_argument("--no-llm", action="store_true", help="구독 사용량 없이 목록만 만든다")
     parser.add_argument("--hours", type=int, default=24, help="수집 기간(시간). 기본 24")
     parser.add_argument("--state", default=os.path.join("state", "seen.json"),
                         help="발송 기록 파일 경로")
+    parser.add_argument("--report", help="전체 후보 비교와 개발 보고서를 저장할 Markdown 경로")
     args = parser.parse_args(argv)
     if args.hours < 1:
         parser.error("--hours는 1 이상이어야 합니다")
@@ -307,7 +312,8 @@ def parse_args(argv):
 
 
 def main(argv=None, *, now=None, fetcher=kr_sources.fetch, client_factory=None,
-         opener=urllib.request.urlopen, sleep=time.sleep, evidence_fn=gather_evidence):
+         opener=urllib.request.urlopen, sleep=time.sleep, evidence_fn=gather_evidence,
+         research_fn=market_evidence.collect):
     args = parse_args(argv)
     now = now or datetime.now(timezone.utc)
     today = now.astimezone(KST).date()
@@ -324,17 +330,27 @@ def main(argv=None, *, now=None, fetcher=kr_sources.fetch, client_factory=None,
     print(f"수집 {len(items)}건, 실패한 소스 {len(errors)}개", file=sys.stderr)
 
     state = seen_state.load(args.state, today)
-    client, no_client_note = None, NOTE_NO_KEY
-    if idea_ladder.has_key():
+    client, no_client_note = None, NOTE_NO_LLM
+    if not args.no_llm and idea_ladder.is_available():
         try:
             client = (client_factory or idea_ladder.make_client)()
         except idea_ladder.LadderError as e:
             print(f"[LLM] 초기화 실패: {e}", file=sys.stderr)
             no_client_note = NOTE_CLIENT_FAIL
+    full_report = []
     lines, record = build_report(items, state, hours=args.hours, today=today,
                                  client=client, evidence_fn=evidence_fn,
-                                 no_client_note=no_client_note)
+                                 no_client_note=no_client_note, research_fn=research_fn, full_report=full_report)
     chunks = chunk_lines(lines)
+
+    if args.report:
+        try:
+            report_path = Path(args.report)
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            status = "미리보기 — 발송하지 않음" if args.dry_run else "발송 전 분석 보고서 — 발송 성공 여부는 실행 로그 참고"
+            report_path.write_text(status + "\n\n" + "\n".join(full_report or lines) + "\n", encoding="utf-8")
+        except OSError:
+            print("전체 보고서 저장 실패 — Discord 출력은 계속합니다.", file=sys.stderr)
 
     if args.dry_run:
         print("\n\n".join(chunks))
@@ -346,7 +362,7 @@ def main(argv=None, *, now=None, fetcher=kr_sources.fetch, client_factory=None,
                 sleep(1)
             send_discord(webhook, chunk, opener)
     except Exception as e:
-        print(f"디스코드 발송 실패: {e}", file=sys.stderr)
+        print(f"디스코드 발송 실패: {type(e).__name__}", file=sys.stderr)
         return 1
 
     for kind, keys in record.items():

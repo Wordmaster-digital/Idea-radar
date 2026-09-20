@@ -1,3 +1,10 @@
 __pycache__/
 *.pyc
 state/
+
+.env
+.env.*
+!.env.example
+.venv/
+logs/
+reports/

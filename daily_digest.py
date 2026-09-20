@@ -640,7 +640,7 @@ def main():
     print(f"{len(items)}건 → 설명 수집 중...", file=sys.stderr)
     items = [summarize(it) for it in items]
 
-    use_llm = llm_enrich is not None and llm_enrich.has_key()
+    use_llm = llm_enrich is not None and llm_enrich.is_available()
     if use_llm:
         print("한국어 번역 중...", file=sys.stderr)
         items = llm_enrich.translate_batch(items)

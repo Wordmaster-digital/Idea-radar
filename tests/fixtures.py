@@ -74,3 +74,72 @@ IDEA_TEMPLATE = {
 
 def idea(i, verdict="GO", title="가칭"):
     return {**IDEA_TEMPLATE, "i": i, "verdict": verdict, "title": title}
+
+
+def research(today, cards=()):
+    return ([{"kind": kind, "title": f"합성 {kind} 신호", "url": f"https://example.com/{kind}",
+              "date": today, "outlet": "가상일보", "scope": "테스트용 가상 자료"}
+             for kind in ("demand", "trend")], [])
+
+
+def merged_cards(count=4):
+    return [{**card(i, f"소재{i}"), "url": f"https://example.com/{i}",
+             "published": NOW, "outlets": {"가상일보"}, "description": "가상 소재 설명"}
+            for i in range(count)]
+
+
+class PipelineClient:
+    """Network-free full responses, with optional stage mutation for failure tests."""
+    def __init__(self, mutate=None, fail=None):
+        self.calls, self.mutate, self.fail = [], mutate, fail
+
+    def generate(self, system, payload, schema, effort):
+        from idea_ladder import LadderError
+        name = next(iter(schema["properties"]))
+        self.calls.append({"name": name, "payload": payload, "effort": effort})
+        if name == self.fail:
+            raise LadderError("합성 실패")
+        refs = ([s["id"] for s in payload.get("sources", []) if s["kind"] in ("demand", "trend")]
+                if isinstance(payload, dict) else [])
+        scores = dict(demand=3, trend=3, gap=3, feasibility=4, payment=2)
+        if name == "cards":
+            rows = [card(i, f"소재{i}") for i in range(len(payload))]
+        elif name == "assessments":
+            rows = [dict(i=c["i"], **scores, target_users="동네 통학생", pain="반복되는 우회 이동",
+                         trend_hypothesis="폭염 단서 → 더운 날 증가 가설 → 보행 경로 수요 가설",
+                         reason="다른 소재보다 직접 모집이 쉬움", unknowns=["실제 반복 사용 확인 필요"],
+                         evidence_ids=refs) for c in payload["cards"]]
+        elif name == "variants":
+            rows = []
+            for c in payload["shortlisted"]:
+                for direction in ("수요층 전환", "상황·시간축", "의사결정 확장"):
+                    i = len(rows)
+                    rows.append(dict(i=i, parent_i=c["i"], direction=direction, title=f"파생안{i}",
+                                     target_users=f"보행자 그룹{i}", problem="더운 이동 경로",
+                                     added_axis=f"이동 제약{i}", decision=f"경로 선택{i}",
+                                     difference="정보 표시에서 이동 선택으로", demand_case="불편 빈도 확인 필요",
+                                     trend_case="폭염 영향 가설", payer="학교 시설팀 확인 필요",
+                                     mvp_scope="수동 조사한 경로 세 개 비교", falsifier="불편이 반복되지 않으면 중단",
+                                     assumptions=["지도 데이터 확인 필요"], evidence_ids=refs))
+        elif name == "reviews":
+            rows = [dict(i=v["i"], **scores, verdict="GO", reason="다른 안보다 실험이 작음",
+                         strongest_risk="반복 사용 부족", counterargument="지도 앱으로 충분할 수 있음",
+                         compared_with="상황별 대안과 비교해 수동 검증이 쉬움", required_check="주 2회 이상 불편한가",
+                         evidence_ids=refs) for v in payload["variants"]]
+        elif name == "plans":
+            rows = [dict(i=v["i"], **{k: v[k] for k in ("title", "target_users", "added_axis", "decision")},
+                         core_hypothesis="정보 → 이동 제약 → 경로 결정이 반복 사용으로 이어질 가설",
+                         problem="더운 이동 경로", difference="선택 행동 지원", trend_link="폭염 변화 가설",
+                         payer="학교 시설팀 확인 필요", week1="통학생 인터뷰와 세 경로 조사",
+                         week2="수동 추천 화면 실험", first10_users="학교 게시판에서 통학생 10명 모집",
+                         experiment="10명에게 세 경로를 보여주고 2주 동안 재사용 관찰",
+                         success_metric="제안: 2주 내 10명 중 4명 재사용", kill_criterion="제안: 2주 내 재사용 2명 미만",
+                         next_pivot="재사용 부족 시 보호자 동행 이동으로 대상 전환",
+                         data_requirements=["지도 이용 조건 확인 필요; 동의받은 현장 수동 조사 대안"],
+                         exclude_scope=["자동 길찾기"], risks=["위치정보 수집 최소화"],
+                         unknowns=["지불 의사 확인 필요"], evidence_ids=refs) for v in payload["winners"]]
+        else:
+            raise AssertionError(name)
+        if self.mutate:
+            self.mutate(name, rows)
+        return {name: rows}
