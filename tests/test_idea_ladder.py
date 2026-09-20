@@ -47,6 +47,13 @@ class RequestTests(unittest.TestCase):
 
 
 class CardTests(unittest.TestCase):
+    def test_rejected_item_uses_only_three_fields_without_losing_input_coverage(self):
+        dropped = {"i": 0, "keep": False, "drop_reason": "대기업 발표"}
+        client, _ = fake_client(text=json.dumps({"cards": [dropped]}))
+        self.assertEqual(idea_ladder.make_cards(client, ITEMS), [dropped])
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(idea_ladder.LadderError):
+            idea_ladder.make_cards(client, ITEMS * 2)
+
     def test_keeps_only_valid_rows_when_all_inputs_covered(self):
         client, _ = fake_client(text=CARDS_JSON)
         with contextlib.redirect_stderr(io.StringIO()):

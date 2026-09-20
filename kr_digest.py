@@ -14,6 +14,7 @@ import re
 import sys
 import time
 import urllib.request
+import uuid
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -22,6 +23,9 @@ import idea_ladder
 import idea_development
 import development_report
 import market_evidence
+import link_check
+import pdf_report
+import report_delivery
 import kr_sources
 import seen_state
 from daily_digest import UA, gather_evidence
@@ -239,15 +243,39 @@ def chunk_lines(lines, limit=CHUNK_LIMIT):
     return chunks
 
 
-def send_discord(webhook, content, opener=urllib.request.urlopen):
+def send_discord(webhook, content, opener=urllib.request.urlopen, attachment=None):
     """멘션을 막고 링크 미리보기를 끈 채로 보낸다."""
-    body = json.dumps({"content": content, "flags": 4,
-                       "allowed_mentions": {"parse": []}}).encode("utf-8")
+    payload = {"content": content, "flags": 4, "allowed_mentions": {"parse": []}}
+    content_type = "application/json"
+    if attachment is None:
+        body = json.dumps(payload).encode("utf-8")
+    else:
+        attachment = Path(attachment)
+        data = attachment.read_bytes()
+        if len(data) > 8_000_000:
+            raise ValueError("Report attachment exceeds the 8 MB delivery limit")
+        filename = "idea-radar" + attachment.suffix
+        payload["attachments"] = [{"id": 0, "filename": filename}]
+        boundary = "IdeaRadar" + uuid.uuid4().hex
+        mime = "application/pdf" if attachment.suffix == ".pdf" else "text/markdown; charset=utf-8"
+        body = (f'--{boundary}\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n'.encode()
+                + json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                + f'\r\n--{boundary}\r\nContent-Disposition: form-data; name="files[0]"; filename="{filename}"\r\nContent-Type: {mime}\r\n\r\n'.encode()
+                + data + f"\r\n--{boundary}--\r\n".encode())
+        content_type = "multipart/form-data; boundary=" + boundary
+    parts = urlsplit(webhook)
+    query = [(key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True) if key != "wait"]
+    webhook = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query + [("wait", "true")]), ""))
     request = urllib.request.Request(
         webhook, data=body,
-        headers={"Content-Type": "application/json", "User-Agent": UA})
+        headers={"Content-Type": content_type, "User-Agent": UA})
     with opener(request, timeout=25) as response:
-        return response.status
+        if response.status != 200:
+            raise ValueError("Discord did not confirm message creation")
+        message = json.loads(response.read().decode("utf-8"))
+        if not isinstance(message, dict) or not isinstance(message.get("id"), str) or not message["id"]:
+            raise ValueError("Discord message receipt missing")
+        return message["id"]
 
 
 def _record(groups, names):
@@ -313,7 +341,7 @@ def parse_args(argv):
 
 def main(argv=None, *, now=None, fetcher=kr_sources.fetch, client_factory=None,
          opener=urllib.request.urlopen, sleep=time.sleep, evidence_fn=gather_evidence,
-         research_fn=market_evidence.collect):
+         research_fn=market_evidence.collect, link_checker=link_check.check, pdf_writer=pdf_report.write):
     args = parse_args(argv)
     now = now or datetime.now(timezone.utc)
     today = now.astimezone(KST).date()
@@ -341,16 +369,25 @@ def main(argv=None, *, now=None, fetcher=kr_sources.fetch, client_factory=None,
     lines, record = build_report(items, state, hours=args.hours, today=today,
                                  client=client, evidence_fn=evidence_fn,
                                  no_client_note=no_client_note, research_fn=research_fn, full_report=full_report)
-    chunks = chunk_lines(lines)
-
+    attachment = None
     if args.report:
         try:
             report_path = Path(args.report)
-            report_path.parent.mkdir(parents=True, exist_ok=True)
             status = "미리보기 — 발송하지 않음" if args.dry_run else "발송 전 분석 보고서 — 발송 성공 여부는 실행 로그 참고"
-            report_path.write_text(status + "\n\n" + "\n".join(full_report or lines) + "\n", encoding="utf-8")
+            bundle = report_delivery.prepare(status + "\n\n" + "\n".join(full_report or lines), report_path,
+                                              usage=getattr(client, "usage", []), checker=link_checker, writer=pdf_writer)
+            lines = bundle["summary"].splitlines()
+            attachment = bundle["attachment"]
         except OSError:
             print("전체 보고서 저장 실패 — Discord 출력은 계속합니다.", file=sys.stderr)
+    if attachment is None:
+        markdown = "\n".join(lines)
+        try:
+            results = link_checker(link_check.links(markdown))
+        except Exception:
+            results = {}
+        lines = link_check.sanitize(markdown, results).splitlines()
+    chunks = chunk_lines(lines)
 
     if args.dry_run:
         print("\n\n".join(chunks))
@@ -360,7 +397,8 @@ def main(argv=None, *, now=None, fetcher=kr_sources.fetch, client_factory=None,
         for n, chunk in enumerate(chunks):
             if n:
                 sleep(1)
-            send_discord(webhook, chunk, opener)
+            message_id = send_discord(webhook, chunk, opener, attachment=attachment if n == 0 else None)
+            print(f"[Discord] message_id={message_id}", file=sys.stderr)
     except Exception as e:
         print(f"디스코드 발송 실패: {type(e).__name__}", file=sys.stderr)
         return 1
