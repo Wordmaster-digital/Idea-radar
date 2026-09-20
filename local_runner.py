@@ -1,6 +1,7 @@
 """Local scheduled entry point. Load literal settings and serialize state writes."""
 
 from contextlib import contextmanager
+from datetime import datetime
 import os
 from pathlib import Path
 import sys
@@ -69,7 +70,8 @@ def main(argv=None):
             print("준비 완료: Discord 설정 있음, ChatGPT 구독 로그인 확인됨 (발송·LLM 호출 없음)")
             return 0
         with run_lock(ROOT / "state" / "local.lock"):
-            return kr_digest.main(["--state", str(ROOT / "state" / "seen.json"), *args])
+            report = ROOT / "reports" / (datetime.now().strftime("%Y-%m-%d_%H%M%S") + ".md")
+            return kr_digest.main(["--state", str(ROOT / "state" / "seen.json"), "--report", str(report), *args])
     except (OSError, ValueError, RuntimeError) as error:
         # Do not expose OS paths/URLs from arbitrary exceptions.
         message = str(error) if isinstance(error, (ValueError, RuntimeError)) else type(error).__name__

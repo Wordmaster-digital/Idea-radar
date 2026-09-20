@@ -19,6 +19,6 @@ $firstRun = [datetime]::Today.Add(([datetime]::ParseExact($At, "HH:mm", [culture
 if ($firstRun -le (Get-Date)) { $firstRun = $firstRun.AddDays(1) }
 $trigger = New-ScheduledTaskTrigger -Daily -At $firstRun
 $principal = New-ScheduledTaskPrincipal -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
-$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 30) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 45) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description "Idea-radar: local ChatGPT subscription analysis and Discord delivery" | Out-Null
 Write-Output "Installed IdeaRadar-Daily at $At (PC local time; signed-in user required)."

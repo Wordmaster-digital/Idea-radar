@@ -7,3 +7,4 @@ state/
 !.env.example
 .venv/
 logs/
+reports/

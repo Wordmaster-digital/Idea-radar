@@ -1,5 +1,9 @@
 # 아이디어 계단 탐색기 (Idea Ladder Explorer)
 
+> 이 파일은 사람이 대화창에서 사용하는 확장 검증 절차입니다. 자동 실행 프롬프트는
+> `idea_development.py`에 있으며 후보 비교 → 세 방향 파생 → 반론 재검토 → 실험 설계를 수행합니다.
+> 자동 실행의 검색 범위는 README를 따릅니다. 아래 수동 검증 채널을 모두 조회했다는 뜻은 아닙니다.
+
 > Claude Project의 "프로젝트 지침" 또는 ChatGPT의 Custom GPT Instructions에 그대로 붙여넣어 사용.
 > 웹 검색이 켜져 있어야 정상 작동함.
 

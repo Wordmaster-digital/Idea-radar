@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """idea_ladder.py — ChatGPT 구독의 Codex로 아이템 카드와 보완 아이디어를 만든다.
 
-두 단계 모두 구조화 출력(JSON 스키마)을 강제하고, 필수 필드가 빠진 항목은 버린다.
+카드 생성과 공통 응답 검증을 제공한다. make_ideas는 구형 호출의 호환용이다.
+현재 자동 개발 파이프라인은 idea_development.py에서 실행한다.
 실패는 LadderError 하나로 모아, 호출 쪽이 저하 모드로 넘어가게 한다.
 """
 
@@ -133,8 +134,15 @@ def request_json(client, system, payload, schema, effort):
 
 def _valid_value(value, spec):
     kind = spec["type"]
+    if kind == "object":
+        return (isinstance(value, dict) and set(value) == set(spec["properties"])
+                and all(_valid_value(value[key], item) for key, item in spec["properties"].items()))
     if kind == "array":
-        return isinstance(value, list) and all(_valid_value(v, spec["items"]) for v in value)
+        return (isinstance(value, list) and len(value) <= spec.get("maxItems", len(value))
+                and all(_valid_value(v, spec["items"]) for v in value))
+    if kind == "string" and isinstance(value, str):
+        if len(value.strip()) < spec.get("minLength", 0) or len(value) > spec.get("maxLength", len(value)):
+            return False
     expected = {"string": str, "integer": int, "boolean": bool}[kind]
     return type(value) is expected and ("enum" not in spec or value in spec["enum"])
 

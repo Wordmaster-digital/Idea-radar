@@ -60,7 +60,12 @@ class LocalRunnerTests(unittest.TestCase):
         with patch.object(local_runner, "ROOT", self.root), \
              patch.object(local_runner.kr_digest, "main", return_value=0) as digest:
             self.assertEqual(local_runner.main(["--dry-run", "--no-llm"]), 0)
-        digest.assert_called_once_with(["--state", str(self.root / "state" / "seen.json"), "--dry-run", "--no-llm"])
+        digest.assert_called_once()
+        args = digest.call_args.args[0]
+        self.assertEqual(args[:3], ["--state", str(self.root / "state" / "seen.json"), "--report"])
+        self.assertEqual(Path(args[3]).parent, self.root / "reports")
+        self.assertEqual(Path(args[3]).suffix, ".md")
+        self.assertEqual(args[4:], ["--dry-run", "--no-llm"])
 
     def test_lock_blocks_another_process_and_is_released_after_exception(self):
         lock = self.root / "run.lock"
