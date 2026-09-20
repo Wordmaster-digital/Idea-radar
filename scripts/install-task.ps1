@@ -13,7 +13,7 @@ if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
     throw "IdeaRadar-Daily already exists. Inspect it before replacing it."
 }
 $runner = Join-Path $PSScriptRoot "run-local.ps1"
-$arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -File "{0}" -Python "{1}"' -f $runner, $Python
+$arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File "{0}" -Python "{1}"' -f $runner, $Python
 $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument $arguments -WorkingDirectory $radarRoot
 $firstRun = [datetime]::Today.Add(([datetime]::ParseExact($At, "HH:mm", [cultureinfo]::InvariantCulture)).TimeOfDay)
 if ($firstRun -le (Get-Date)) { $firstRun = $firstRun.AddDays(1) }

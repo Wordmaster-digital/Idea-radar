@@ -75,12 +75,14 @@ python -m unittest discover -s tests -v        # 외부 접속 없이 검증
 
 ```powershell
 # Python 실행 파일의 실제 절대 경로로 바꾼다.
-.\scripts\install-task.ps1 -Python 'C:\Python312\python.exe' -At '08:00'
+powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\scripts\install-task.ps1 -Python 'C:\Python312\python.exe' -At '08:00'
 ```
 
 설치되는 작업 이름은 `IdeaRadar-Daily`다. PC가 켜져 있고 Windows에 로그인되어 있어야 한다. 놓친 실행은 다음 실행 가능 시점에 처리한다. 작업이 이미 있으면 덮어쓰지 않고 중단한다. 5단계 분석과 오류 시 목록 발송 시간을 확보하기 위해 작업 전체 제한은 45분이다. 기존 30분 작업을 업데이트할 때도 이 제한을 45분으로 변경한다. 실행 로그는 `logs/`, 중복 방지 기록은 `state/`, 전체 보고서는 `reports/`에 저장하며 모두 Git에서 제외된다. 작업 삭제는 Windows 작업 스케줄러에서 `IdeaRadar-Daily`를 선택해 진행한다.
 
 예약 작업은 설치된 코드만 실행하며 Git에서 새 코드를 자동으로 받지 않는다. 업데이트할 때는 예약 실행과 겹치지 않는 시간에 해당 폴더의 코드를 갱신하고 테스트한다.
+
+예약 실행 프로세스에는 `RemoteSigned` 실행 정책을 지정한다. Windows 기본 `Restricted` 정책에서 로컬 실행 스크립트가 시작도 못 하고 종료되는 것을 방지하며, 시스템 전체 정책은 변경하지 않는다. 회사의 상위 정책이 스크립트 실행을 막으면 관리자 설정을 따라야 한다.
 
 ## GitHub Actions와 전환 순서
 
