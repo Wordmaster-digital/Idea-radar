@@ -75,6 +75,7 @@ class MarketEvidenceTests(unittest.TestCase):
         self.assertEqual(len(calls), 6)
         self.assertEqual(records, [])
         self.assertTrue(warnings)
+        self.assertIn("선정 후보 관련", warnings[-1])
 
     def test_failed_and_malformed_feeds_are_safe_and_explicit(self):
         def fetch(url):

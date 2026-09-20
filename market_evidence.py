@@ -76,5 +76,6 @@ def collect(today, cards=(), fetcher=fetch):
                     seen.add(key)
                     records.append(row)
     if not records:
-        warnings.append("최근 수요·트렌드 뉴스 근거를 확보하지 못했습니다. 전망은 검증 전 가설입니다.")
+        scope = "선정 후보 관련" if cards else "전체 비교용"
+        warnings.append(f"{scope} 수요·트렌드 뉴스 근거를 확보하지 못했습니다. 전망은 검증 전 가설입니다.")
     return records, warnings
