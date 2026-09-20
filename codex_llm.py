@@ -71,6 +71,7 @@ class CodexClient:
             raise CodexError("Codex CLI가 설치되지 않았거나 경로를 찾을 수 없음")
         self.model = os.environ.get("IDEA_MODEL", "").strip() or DEFAULT_MODEL
         self.env = child_environment()
+        self.usage = []
         # Do not force a login method on this check: mismatched forced auth can
         # sign a user out. Reject API-key authentication without changing it.
         with tempfile.TemporaryDirectory(prefix="idea-radar-auth-") as work:
@@ -141,7 +142,9 @@ class CodexClient:
             if not completed:
                 raise CodexError("Codex 분석이 완료되지 않음")
             data = json.loads(output_path.read_text(encoding="utf-8"))
-        counts = " ".join(f"{key}={usage[key]}" for key in ("input_tokens", "output_tokens")
+        self.usage.append({key: usage[key] for key in ("input_tokens", "output_tokens", "cached_input_tokens")
+                           if type(usage.get(key)) is int})
+        counts = " ".join(f"{key}={usage[key]}" for key in ("input_tokens", "output_tokens", "cached_input_tokens")
                           if type(usage.get(key)) is int)
         print(f"[LLM] provider=codex auth=chatgpt model={self.model} {counts}".rstrip(), file=sys.stderr)
         return data

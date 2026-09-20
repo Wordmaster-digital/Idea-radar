@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory=$true)][string]$Python,
-    [string]$At = "08:00"
+    [string]$At = "12:00"
 )
 $ErrorActionPreference = "Stop"
 $radarRoot = Split-Path -Parent $PSScriptRoot

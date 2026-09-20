@@ -1,6 +1,6 @@
 # Idea-radar
 
-국내에서 **새로 나온 창업 아이템**을 매일 모아 **수요층·미래 트렌드로 비교 → 피벗·파생안 생성 → 반론 검토 → MVP와 검증 실험 설계**까지 진행하고 디스코드로 보내는 봇이다. ChatGPT 구독으로 로그인한 **개인 PC의 Codex CLI**가 분석한다. Windows 예약 실행의 기본 시간은 08:00(PC 현지 시간)이다.
+국내에서 **새로 나온 창업 아이템**을 매일 모아 **수요층·미래 트렌드로 비교 → 피벗·파생안 생성 → 반론 검토 → MVP와 검증 실험 설계**까지 진행하고 디스코드로 보내는 봇이다. ChatGPT 구독으로 로그인한 **개인 PC의 Codex CLI**가 분석한다. Windows 예약 실행의 기본 시간은 정오 12:00(PC 현지 시간)이다.
 
 ## 어떻게 고르나
 
@@ -28,7 +28,9 @@
 
 수요 출처 인용이 없으면 수요 점수는 최대 2점, 트렌드 출처 인용이 없으면 트렌드 점수는 최대 1점이다. 두 종류의 근거를 모두 인용하지 않았거나 수요·구현 점수가 낮으면 GO를 보류로 낮춘다. **GO는 창업 성공 보장이 아니라 검증 실험 우선 진행**이다. 보류안의 상세 계획은 개발 착수보다 미확인 가설 검증에 초점을 둔다.
 
-Discord에는 상위 12개 후보의 비교, 최대 9개 파생안과 탈락 이유, 최종 2개의 상세 계획을 나눠 보낸다. 모든 후보 비교와 전체 파생안 설명은 `reports/날짜_시간.md`에 남긴다. 보고서는 발송 전에 저장되며, 발송 성공 여부는 `logs/`를 확인한다. 미리보기 보고서는 '발송하지 않음'으로 표시한다.
+로컬 예약 실행은 Discord에 **짧은 요약 1개와 PDF 첨부**를 보낸다. 요약에는 최종 2개의 핵심 가설·첫 실험·통과 기준을, PDF에는 요약·최종안 상세 계획·후보 비교표·파생안 검토표·출처를 담는다. 비교표는 긴 설명을 발췌하며, 전체 원문은 `reports/날짜_시간.md`와 같은 이름의 `.json`에 보존한다. 요약과 PDF는 기존 분석 결과를 코드로 변환하므로 **추가 AI 호출이 없다**. PDF 생성에 실패하면 원문 Markdown 파일을 첨부하고 요약에 알린다.
+
+발송 전 링크는 최대 50개까지 공개 HTTP(S) 주소의 응답과 리디렉션을 확인한다(GET, 주소당 8초, 동시 5개). 확인하지 못한 주소는 클릭 링크 대신 제목과 '링크 확인 불가' 표시로 남긴다. 이는 접속 응답 점검이며 기사 내용의 사실 검증은 아니다. 로그인·접근 차단·일시적 장애가 있거나 점검 이후 주소가 바뀔 수 있다. 점검 결과와 토큰 수는 `.json`에 저장한다. Discord가 생성된 메시지 ID를 반환해야 발송 성공으로 기록한다. 발송 여부는 `logs/`를 확인하며 미리보기 보고서는 '발송하지 않음'으로 표시한다.
 
 ## 수집 소스
 
@@ -42,14 +44,15 @@ Discord에는 상위 12개 후보의 비교, 최대 9개 파생안과 탈락 이
 
 ## 로컬 설정
 
-Python 3.11 이상과 Codex CLI가 필요하다. Python 외부 패키지는 없다. 이 전환은 Codex CLI `0.154.0-alpha.6.2`에서 실제 구독 호출을 검증했다. CLI가 `--ignore-user-config`, `--ephemeral`, `--output-schema`를 지원해야 한다.
+Python 3.11 이상과 Codex CLI가 필요하다. 모델 호출은 Python 표준 라이브러리를 사용하고, PDF 생성에는 ReportLab을 사용한다. PDF 한글 글꼴은 Windows의 맑은 고딕을 기본으로 사용한다. 다른 환경에서는 `IDEA_REPORT_FONT`에 한글 TrueType 글꼴 경로를 지정한다. 이 전환은 Codex CLI `0.154.0-alpha.6.2`에서 실제 구독 호출을 검증했다. CLI가 `--ignore-user-config`, `--ephemeral`, `--output-schema`를 지원해야 한다.
 
 1. 영구 보관할 폴더에 이 저장소를 내려받는다. 예약 작업은 이 폴더의 코드를 실행하므로 임시 폴더를 쓰지 않는다.
 2. `codex login`으로 **ChatGPT 계정**에 로그인한다. `codex login status`가 `Logged in using ChatGPT`인지 확인한다.
 3. `.env.example`을 `.env`로 복사하고 Discord 발송 주소를 넣는다. 이 파일은 Git에서 제외된다. ChatGPT 로그인 토큰이나 API 키는 넣지 않는다.
-4. 아래 준비 확인과 미리보기를 실행한다.
+4. 실제 예약 실행에 사용할 Python으로 의존성을 설치한 뒤 준비 확인과 미리보기를 실행한다.
 
 ```powershell
+python -m pip install -r requirements.txt      # PDF 생성 패키지 설치
 python local_runner.py --check                 # 발송 설정·구독 로그인만 확인, 모델 호출 없음
 python local_runner.py --dry-run               # 구독으로 분석, 발송·발송 기록 저장 없음
 python local_runner.py --dry-run --no-llm      # 구독 사용량 없이 뉴스 목록만 미리보기
@@ -57,7 +60,14 @@ python local_runner.py                         # 분석 결과를 Discord로 발
 python -m unittest discover -s tests -v        # 외부 접속 없이 검증
 ```
 
-`--dry-run`도 Codex를 사용하면 **구독 사용량을 소모한다**. 정상 분석은 최대 5번 호출하므로 기존 2단계보다 사용량이 늘어난다. `--no-llm`은 모델 호출을 생략한다. 수집 기간은 `--hours 48`처럼 변경한다. `local_runner.py`는 실행 위치와 관계없이 설치 폴더의 `.env`, `state/seen.json`, `reports/`를 사용하고, 중복 실행을 잠가 발송 기록 충돌을 막는다. `--report 경로.md`로 보고서 저장 위치를 바꿀 수 있다.
+`--dry-run`도 Codex를 사용하면 **구독 사용량을 소모한다**. 정상 분석은 최대 5번 호출한다. 탈락 항목은 번호·탈락 여부·짧은 이유만 생성하고, 후속 분석에는 출처 번호와 제목·날짜·매체만 전달해 긴 URL을 반복 입력하지 않는다. 링크는 원본 자료에서 복원한다. 절감률은 입력에 따라 달라지며 고정 비율을 보장하지 않는다. `--no-llm`은 모델 호출을 생략한다. 수집 기간은 `--hours 48`처럼 변경한다. `local_runner.py`는 실행 위치와 관계없이 설치 폴더의 `.env`, `state/seen.json`, `reports/`를 사용하고, 중복 실행을 잠가 발송 기록 충돌을 막는다. `--report 경로.md`로 보고서 저장 위치를 바꿀 수 있다.
+
+이미 만든 보고서를 다시 정리할 때는 분석을 반복할 필요가 없다. 아래 명령은 같은 이름의 JSON 원문을 우선 재사용하고 링크를 다시 확인한다. JSON이 없는 이전 보고서는 Markdown을 사용한다. 두 명령 모두 AI 호출과 발송 기록 변경이 없다.
+
+```powershell
+python send_report.py reports/날짜_시간.md          # 요약·PDF만 다시 생성
+python send_report.py reports/날짜_시간.md --send   # 요약·PDF를 Discord에 재발송
+```
 
 | 로컬 설정 | 용도 | 없으면 |
 |---|---|---|
@@ -66,16 +76,17 @@ python -m unittest discover -s tests -v        # 외부 접속 없이 검증
 | `IDEA_CODEX_BIN` | Codex 실행 파일 절대 경로 | PATH, Windows Codex 앱 설치 폴더 순으로 검색 |
 | `IDEA_MODEL` | 구독에서 사용할 모델 | `gpt-5.6-sol` |
 | `IDEA_LLM_MODE` | `codex` 또는 `off` | `codex` |
+| `IDEA_REPORT_FONT` | PDF에 포함할 한글 TrueType 글꼴 경로 | Windows 맑은 고딕; 없으면 Markdown 첨부 |
 
 구독 한도는 평소 Codex 사용과 공유한다. 별도 OpenAI API 호출 경로와 Python SDK 의존성은 제거했다. `OPENAI_API_KEY`나 `CODEX_API_KEY`가 환경에 있더라도 Codex 자식 프로세스에 전달하지 않는다. 별도 크레딧/추가 사용 설정은 사용자의 ChatGPT 계정 정책을 따른다.
 
 ## Windows 예약 실행
 
-먼저 `python local_runner.py --check`가 성공해야 한다. 현재 로그인한 Windows 사용자로 실행하며, 기본 시간은 **PC 현지 시간 08:00**이다. 한국 시간대인지 확인한다.
+먼저 `python local_runner.py --check`가 성공해야 한다. 현재 로그인한 Windows 사용자로 실행하며, 기본 시간은 **PC 현지 시간 정오 12:00**이다. 한국 시간대인지 확인한다.
 
 ```powershell
 # Python 실행 파일의 실제 절대 경로로 바꾼다.
-powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\scripts\install-task.ps1 -Python 'C:\Python312\python.exe' -At '08:00'
+powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\scripts\install-task.ps1 -Python 'C:\Python312\python.exe' -At '12:00'
 ```
 
 설치되는 작업 이름은 `IdeaRadar-Daily`다. PC가 켜져 있고 Windows에 로그인되어 있어야 한다. 놓친 실행은 다음 실행 가능 시점에 처리한다. 작업이 이미 있으면 덮어쓰지 않고 중단한다. 5단계 분석과 오류 시 목록 발송 시간을 확보하기 위해 작업 전체 제한은 45분이다. 기존 30분 작업을 업데이트할 때도 이 제한을 45분으로 변경한다. 실행 로그는 `logs/`, 중복 방지 기록은 `state/`, 전체 보고서는 `reports/`에 저장하며 모두 Git에서 제외된다. 작업 삭제는 Windows 작업 스케줄러에서 `IdeaRadar-Daily`를 선택해 진행한다.
@@ -86,7 +97,7 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\scripts\install-
 
 ## GitHub Actions와 전환 순서
 
-GitHub의 기존 08:00(KST) 예약은 **LLM 없는 뉴스 목록 백업**으로 남겨둔다. 구독 로그인 정보는 GitHub에 업로드하지 않는다. 호스팅된 Actions는 Codex를 설치하거나 유료 API를 호출하지 않는다.
+GitHub의 12:00(KST) 예약은 **LLM 없는 뉴스 목록 백업**으로 남겨둔다. 구독 로그인 정보는 GitHub에 업로드하지 않는다. 호스팅된 Actions는 Codex를 설치하거나 유료 API를 호출하지 않는다.
 
 1. PC의 `.env`를 채우고 구독 분석 미리보기를 확인한다.
 2. 로컬 예약 실행을 설치한다.
@@ -103,10 +114,10 @@ GitHub의 기존 08:00(KST) 예약은 **LLM 없는 뉴스 목록 백업**으로 
 - CLI 없음·분석 비활성화·구독 로그인 실패·카드 생성 실패는 기존 뉴스 목록으로 내려간다. 이후 어느 분석 단계에서 실패하더라도 앞서 완료한 비교·파생안·재검토와 카드 목록을 유지하고 실패한 단계를 표시한다.
 - 비정상 종료, 실패/미완료 이벤트, 빈 결과, JSON 오류, 잘못된 필드·번호·중복·입력 누락도 실패다. **저하 모드에서는 새 발송 기록을 남기지 않아** 문제를 고친 후 재처리할 수 있다.
 - 제공하지 않은 출처 번호, 원본별 세 방향 누락·중복, 같은 내용의 파생안, 선택한 파생안을 다른 아이디어로 바꾼 최종안도 실패 처리한다. 뉴스·경쟁 자료 수집 실패는 경고와 근거 부족 표시를 남기고 가설 검토를 계속한다.
-- 성공 시 `[LLM] provider=codex auth=chatgpt`와 모델·토큰 수를 기록한다. 로그인 정보와 CLI 원문 오류는 출력하지 않는다.
+- 성공 시 `[LLM] provider=codex auth=chatgpt`와 모델·입력/출력 토큰 수, CLI가 제공한 캐시 입력 토큰 수를 기록한다. 캐시 입력은 입력 토큰의 일부이므로 합계에 다시 더하지 않는다. 이 값은 해당 봇 실행의 기록이며 ChatGPT 구독 잔여량이나 과금액을 뜻하지 않는다. 로그인 정보와 CLI 원문 오류는 출력하지 않는다.
 - 수동 해외 다이제스트의 `llm_enrich.py`도 같은 Codex 구독 호출을 사용한다.
 
-PR과 main 변경 시 Windows/Linux의 Python 3.11/3.12에서 테스트한다. 테스트는 가짜 CLI 응답과 실제 로컬 프로세스로 인증 종류 확인, 비밀값 전달 방지, 시간 제한, 전체 후보 비교, 파생안·출처·최종안 일치 검증, 단계별 실패 복구, 기록 보존과 실행 잠금을 확인한다. 뉴스 연구는 날짜 범위·출처·중복·검색 상한을 가짜 피드로 검증한다. CI에서 실제 모델·뉴스·네이버·Discord는 호출하지 않는다.
+PR과 main 변경 시 Windows/Linux의 Python 3.11/3.12에서 테스트한다. 테스트는 가짜 CLI 응답과 실제 로컬 프로세스로 인증 종류 확인, 비밀값 전달 방지, 시간 제한, 전체 후보 비교, 파생안·출처·최종안 일치 검증, 단계별 실패 복구, 기록 보존과 실행 잠금을 확인한다. 뉴스 연구는 날짜 범위·출처·중복·검색 상한을 가짜 피드로 검증한다. 보고서 테스트는 링크 검사 실패 시 클릭 링크 제거, PDF 실패 복구, 첨부 내용, Discord 수신 확인과 발송 기록 순서를 검증한다. CI에서 실제 모델·뉴스·네이버·Discord는 호출하지 않는다.
 
 공식 문서: [ChatGPT 구독 인증](https://learn.chatgpt.com/docs/auth), [Codex 자동 실행과 JSON 출력](https://learn.chatgpt.com/docs/non-interactive-mode), [설정 참조](https://learn.chatgpt.com/docs/config-file/config-reference).
 
@@ -123,6 +134,7 @@ PR과 main 변경 시 Windows/Linux의 Python 3.11/3.12에서 테스트한다. �
 - `local_runner.py` 로컬 진입점 · `codex_llm.py` 구독 호출 · `scripts/` Windows 예약 실행
 - `kr_digest.py` 다이제스트 진입점 · `kr_sources.py` 수집 · `idea_ladder.py` 카드와 공통 응답 검증 · `seen_state.py` 발송 기록
 - `idea_development.py` 후보 비교·파생·재검토·심화 · `market_evidence.py` 수요·트렌드 자료 · `development_report.py` 보고서
+- `report_delivery.py` 보고서 저장·요약·첨부 준비 · `pdf_report.py` PDF 변환 · `link_check.py` 발송 전 링크 점검 · `send_report.py` 분석 없이 보고서 재생성·재발송
 - `idea_ladder_prompt.md` 사람이 직접 쓰는 심층 검증 프롬프트(자동 실행에서 직접 읽지 않음) · `kr_check.py` 키워드 중복 검사기
 - `daily_digest.py` 기존 해외 다이제스트. 자동 실행에서는 빠졌고 `python daily_digest.py`로 직접 돌릴 수 있다
 - 이전 설계와 구현 계획은 `docs/superpowers/` 아래에 있다. 전환 전 기록이므로 현재 인증·모델·실행 설정은 이 README와 실행 코드를 따른다

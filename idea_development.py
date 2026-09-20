@@ -164,6 +164,12 @@ def _research(result, today, cards, research_fn):
         result["warnings"].append("수요·트렌드 자료 수집 실패: 확인 가능한 입력만으로 가설을 검토했습니다.")
 
 
+def model_sources(sources):
+    # Citation IDs suffice: long encoded news URLs never help an offline model.
+    return [{key: source.get(key, "") for key in ("id", "kind", "title", "date", "outlet")}
+            for source in sources.values()]
+
+
 def run(client, cards, today, *, research_fn=market_evidence.collect, evidence_fn=gather_evidence):
     result = {"cards": cards, "comparisons": [], "selected": [], "variants": [], "reviews": [],
               "winners": [], "plans": [], "sources": {}, "warnings": [],
@@ -184,7 +190,7 @@ def run(client, cards, today, *, research_fn=market_evidence.collect, evidence_f
     stage = "후보 비교"
     try:
         comparisons = _rows(client, SCREEN_PROMPT,
-                            {"today": today, "cards": compact_cards, "sources": list(result["sources"].values())},
+                            {"today": today, "cards": compact_cards, "sources": model_sources(result["sources"])},
                             "assessments", ASSESSMENT, range(len(cards)), result["sources"], "medium")
         _ground_scores(comparisons, result["sources"])
         result["comparisons"] = sorted(comparisons, key=lambda row: (-row["score"], -row["demand"], cards[row["i"]]["name"]))
@@ -206,7 +212,7 @@ def run(client, cards, today, *, research_fn=market_evidence.collect, evidence_f
                                 "scope": "앱스토어/설정된 네이버만 검색. 다른 채널·특허·규제는 미확인"})
         shared = {"today": today, "shortlisted": [compact_cards[i] for i in result["selected"]],
                   "assessments": [row for row in comparisons if row["i"] in result["selected"]],
-                  "sources": list(result["sources"].values()), "competitors": competitors}
+                  "sources": model_sources(result["sources"]), "competitors": competitors}
         stage = "피벗·파생"
         variants = _rows(client, VARIANT_PROMPT, shared, "variants", VARIANT,
                          range(len(selected) * len(DIRECTIONS)), result["sources"])

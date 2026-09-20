@@ -31,6 +31,9 @@ class DevelopmentTests(unittest.TestCase):
         sent = client.calls[0]["payload"]["cards"]
         self.assertEqual(len(sent), 15)
         self.assertTrue(all("outlets" not in c and "chart_rank" not in c for c in sent))
+        for call in client.calls:
+            self.assertTrue(all("url" not in s for s in call["payload"]["sources"]))
+        self.assertTrue(all(s["url"].startswith("https://") for s in result["sources"].values()))
 
     def test_missing_evidence_caps_scores_and_cannot_award_go(self):
         result = self.run_pipeline(research_fn=lambda *args: ([], []))

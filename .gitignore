@@ -8,3 +8,5 @@ state/
 .venv/
 logs/
 reports/
+output/
+tmp/

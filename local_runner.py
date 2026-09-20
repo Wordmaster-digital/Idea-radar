@@ -11,7 +11,7 @@ import kr_digest
 
 ROOT = Path(__file__).resolve().parent
 SETTINGS = {"DISCORD_WEBHOOK_URL", "NAVER_CLIENT_ID", "NAVER_CLIENT_SECRET",
-            "IDEA_MODEL", "IDEA_CODEX_BIN", "IDEA_LLM_MODE"}
+            "IDEA_MODEL", "IDEA_CODEX_BIN", "IDEA_LLM_MODE", "IDEA_REPORT_FONT"}
 
 
 def load_settings(path):

@@ -42,7 +42,11 @@ CARD_ITEM = _object({
     "traction": STR,
     "kw": STR_LIST,
 })
-CARD_SCHEMA = _object({"cards": {"type": "array", "items": CARD_ITEM}})
+KEPT_CARD = _object({**CARD_ITEM["properties"], "keep": {"type": "boolean", "enum": [True]}})
+DROP_CARD = _object({"i": {"type": "integer"}, "keep": {"type": "boolean", "enum": [False]},
+                     "drop_reason": STR})
+CARD_OUTPUT = {"anyOf": [KEPT_CARD, DROP_CARD]}
+CARD_SCHEMA = _object({"cards": {"type": "array", "items": CARD_OUTPUT}})
 
 IDEA_ITEM = _object({
     "i": {"type": "integer"},
@@ -79,7 +83,8 @@ keep=false 대상:
 - stage: 1=계산·수집(원천 데이터·기술), 2=시각화·검색·목록(정보 제공), 3=의사결정(사용자 행동을 정해줌).
 - traction: 입력에 나온 매출·가입자·순위 수치만 쓴다. 없으면 빈 문자열. 지어내지 않는다.
 - kw: 국내에서 비슷한 서비스를 찾을 한국어 검색어 2개. 영어 이름을 음차하지 말고 기능을 한국어로.
-- keep=false여도 모든 필드를 채운다(모르면 빈 문자열, stage는 1).
+- keep=false는 i, keep, drop_reason 세 필드만 출력한다. 탈락 사유는 30자 안팎이다.
+- keep=true만 모든 카드 필드를 채운다. 탈락 항목의 이름·기능·대상을 반복 출력하지 않는다.
 
 입력 항목마다 i를 그대로 돌려준다."""
 
@@ -133,6 +138,8 @@ def request_json(client, system, payload, schema, effort):
 
 
 def _valid_value(value, spec):
+    if "anyOf" in spec:
+        return any(_valid_value(value, item) for item in spec["anyOf"])
     kind = spec["type"]
     if kind == "object":
         return (isinstance(value, dict) and set(value) == set(spec["properties"])
@@ -151,10 +158,8 @@ def valid_rows(rows, limit, item_schema, *, require_all=False):
     """필드 타입·필수 항목·번호를 검사하고 입력 누락은 단계 전체 실패로 처리한다."""
     out = []
     seen = set()
-    properties = item_schema["properties"]
     for row in rows or []:
-        if (not isinstance(row, dict) or set(row) != set(properties)
-                or not all(_valid_value(row[f], spec) for f, spec in properties.items())):
+        if not _valid_value(row, item_schema):
             print("[LLM] 필드 형식이 잘못된 항목을 버림", file=sys.stderr)
             continue
         if not 0 <= row["i"] < limit:
@@ -177,7 +182,7 @@ def make_cards(client, items):
                 "outlets": sorted(it.get("outlets", [])), "chart_rank": it.get("chart_rank")}
                for n, it in enumerate(items)]
     data = request_json(client, CARD_SYSTEM, payload, CARD_SCHEMA, "low")
-    return valid_rows(data["cards"], len(items), CARD_ITEM, require_all=True)
+    return valid_rows(data["cards"], len(items), CARD_OUTPUT, require_all=True)
 
 
 def make_ideas(client, cards, today):

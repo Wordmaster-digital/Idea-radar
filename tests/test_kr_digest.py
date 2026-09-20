@@ -155,7 +155,7 @@ class SendTests(unittest.TestCase):
         @contextlib.contextmanager
         def opener(req, timeout=0):
             captured["body"] = json.loads(req.data.decode("utf-8"))
-            yield SimpleNamespace(status=204)
+            yield SimpleNamespace(status=200, read=lambda: b'{"id":"123"}')
 
         kr_digest.send_discord("https://discord.example/hook", "@everyone 알림", opener)
         self.assertEqual(captured["body"]["allowed_mentions"], {"parse": []})
@@ -233,7 +233,7 @@ class MainTests(unittest.TestCase):
             if fail_send:
                 raise OSError("발송 실패")
             self.sent.append(json.loads(req.data.decode("utf-8")))
-            yield SimpleNamespace(status=204)
+            yield SimpleNamespace(status=200, read=lambda: b'{"id":"123"}')
 
         env = {"IDEA_LLM_MODE": "codex" if llm else "off", "DISCORD_WEBHOOK_URL": webhook}
         with patch.dict(os.environ, env), patch.object(idea_ladder, "is_available", return_value=llm), \
@@ -243,7 +243,8 @@ class MainTests(unittest.TestCase):
                                   client_factory=client_factory,
                                   opener=opener, sleep=lambda seconds: None,
                                   evidence_fn=lambda card: card.setdefault("evidence", []),
-                                  research_fn=fixtures.research)
+                                  research_fn=fixtures.research,
+                                  link_checker=lambda urls: {u: {"ok": True, "url": u, "status": "200"} for u in urls})
         return code, out.getvalue()
 
     def test_dry_run_prints_without_saving_state(self):
@@ -375,6 +376,57 @@ class MainTests(unittest.TestCase):
             self.assertIn(token, text)
         self.assertFalse(os.path.exists(self.state_path))
         self.assertEqual(self.sent, [])
+
+    def test_report_run_sends_one_brief_and_pdf_then_records_only_confirmed_delivery(self):
+        from email.parser import BytesParser
+        from email.policy import default
+        from pathlib import Path
+
+        for receipt in (b'{}', b'{"id":"confirmed"}'):
+            with self.subTest(receipt=receipt):
+                client = fixtures.PipelineClient()
+                captured = []
+                report = Path(self.dir.name) / "delivery.md"
+
+                def writer(path, markdown, **kwargs):
+                    self.assertIn("피벗·파생", markdown)
+                    self.assertNotIn("https://", markdown)
+                    Path(path).write_bytes(b"%PDF-fixture")
+                    return path
+
+                @contextlib.contextmanager
+                def opener(request, timeout):
+                    self.assertFalse(Path(self.state_path).exists())
+                    captured.append(request)
+                    yield SimpleNamespace(status=200, read=lambda: receipt)
+
+                with patch.dict(os.environ, {"DISCORD_WEBHOOK_URL": "https://discord.example/hook"}), \
+                     patch.object(idea_ladder, "is_available", return_value=True), \
+                     contextlib.redirect_stderr(io.StringIO()):
+                    code = kr_digest.main(["--state", self.state_path, "--report", str(report)],
+                                          now=NOW, fetcher=self.fetcher, client_factory=lambda: client,
+                                          opener=opener, sleep=lambda _: None,
+                                          evidence_fn=lambda card: None, research_fn=fixtures.research,
+                                          link_checker=lambda urls: {}, pdf_writer=writer)
+                self.assertEqual(len(client.calls), 5)
+                self.assertEqual(len(captured), 1)
+                request = captured[0]
+                message = BytesParser(policy=default).parsebytes(
+                    ("Content-Type: " + request.get_header("Content-type") + "\r\n\r\n").encode() + request.data)
+                parts = list(message.iter_parts())
+                brief = json.loads(parts[0].get_payload(decode=True))["content"]
+                self.assertLessEqual(len(brief), 1900)
+                self.assertEqual(brief.count("• 핵심:"), 2)
+                self.assertEqual(parts[1].get_payload(decode=True), b"%PDF-fixture")
+                self.assertTrue(report.with_suffix(".json").is_file())
+                if receipt == b'{}':
+                    self.assertEqual(code, 1)
+                    self.assertFalse(Path(self.state_path).exists())
+                else:
+                    self.assertEqual(code, 0)
+                    state = seen_state.load(self.state_path, NOW.astimezone(kr_digest.KST).date())
+                    self.assertTrue(state["urls"])
+                    self.assertTrue(state["names"])
 
 
 if __name__ == "__main__":
