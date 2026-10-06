@@ -141,6 +141,16 @@ class SplitDeliveryTests(unittest.TestCase):
         self.assertFalse(parts[0][1]['selected'])
         self.assertEqual(parts[0][1]['pool_count'], 0)
 
+    def test_corrected_category_moves_existing_notice_without_cross_group_duplicate(self):
+        saved = empty()
+        before = rows()[3]
+        selected, updates = state.select([before], saved, TODAY)
+        state.acknowledge(saved, selected, updates, TODAY, '123', [])
+        activity, career = self.parts(saved, candidates=[{**before, 'category': '공모전'}])
+        self.assertEqual(activity[1]['pool_count'], 1)
+        self.assertEqual(career[1]['briefing']['pool_count'], 0)
+        self.assertEqual(activity[1]['selected'][0]['category'], '공모전')
+
     def test_corrupt_group_receipt_cannot_silently_reset_or_resend(self):
         saved = {**empty(), 'deliveries': {'activities': {'date': TODAY.isoformat(), 'version': 3, 'message_id': ''}}}
         with tempfile.TemporaryDirectory() as tmp:
