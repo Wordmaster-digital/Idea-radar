@@ -134,10 +134,24 @@ def send(webhook, content, attachment):
     body += json.dumps(payload, ensure_ascii=False).encode() + b"\r\n"
     body += (f'--{boundary}\r\nContent-Disposition: form-data; name="files[0]"; filename="{attachment.name}"\r\nContent-Type: application/octet-stream\r\n\r\n').encode()
     body += attachment.read_bytes() + f'\r\n--{boundary}--\r\n'.encode()
-    req = Request(url, data=body, headers={"Content-Type": "multipart/form-data; boundary=" + boundary}, method="POST")
+    req = Request(url, data=body, headers={
+        "Content-Type": "multipart/form-data; boundary=" + boundary,
+        "User-Agent": "OpportunityRadar/1.0 (+https://github.com/Wordmaster-digital/Idea-radar)",
+    }, method="POST")
     try:
         with urlopen(req, timeout=30) as response:
             result = json.load(response)
+    except HTTPError as error:
+        # Report safe status codes, never the credential-bearing URL or raw body.
+        detail = ""
+        try:
+            payload = json.loads(error.read(4096))
+            code = payload.get("code") if isinstance(payload, dict) else None
+            if isinstance(code, int) and not isinstance(code, bool):
+                detail = f" · Discord 오류 코드 {code}"
+        except Exception:
+            pass
+        raise RuntimeError(f"Discord 발송 오류: HTTP {error.code}{detail}") from None
     except Exception:
         # No automatic retry on ambiguous failures: a timeout may already have delivered.
         raise RuntimeError("Discord 발송 실패 또는 수신 확인 불가. 로그 확인 후 재실행") from None
