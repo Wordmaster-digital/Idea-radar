@@ -11,6 +11,7 @@ import net
 import sources
 import state
 import verify
+import ranking
 from discovery import FIELDS
 
 TERMS = {'해커톤': ('해커톤','메이커톤','hackathon'), '공모전': ('공모','경진대회','콘테스트'),
@@ -29,10 +30,15 @@ def category(text):
     return next((name for name, terms in TERMS.items() if any(t in text for t in terms)), '')
 
 
-def queries(plan):
-    return ['해커톤 모집','공모전 모집','대외활동 모집','인턴 채용','일경험 모집','신입 체험형 채용',
+def queries(plan, profile=None):
+    broad = ['해커톤 모집','공모전 모집','대외활동 모집','인턴 채용','일경험 모집','신입 체험형 채용',
             plan['region'] + ' 청년 모집', plan['field'] + ' 공모전',
             '산학협력단 교외 공모전', '재단 참가자 모집', '연구원 인턴 모집', '협회 공모전 모집']
+    if profile:
+        broad += ['KOTRA 무역 해외마케팅 인턴 모집', '글로벌 마케팅 무역 일경험 모집',
+                  '마케팅 기획 브랜드 공모전 모집', '영어 대학생 서포터즈 모집',
+                  '세종 대전 마케팅 일경험 모집', '서울 경기 해외영업 마케팅 인턴 채용']
+    return broad
 
 
 def search(query):
@@ -106,27 +112,43 @@ def structured_job(values):
     return next(walk(values),None)
 
 
+FIELD_BOUNDARY = r'주최(?:/주관)?|주관|기업명|기관명|회사명|지원자격|참가대상|모집대상|응모자격|자격요건|모집인원|근무지역|근무지|모집직무|모집분야|학력|경력|고용형태|채용형태|주요업무|담당업무|우대사항|마감일|시작일|전형절차|지원기간|접수기간|시상내역|활동혜택|활동지역|활동장소|개최장소|참여혜택|문의처|문의|홈페이지|공유하기|스크랩|개인정보|더보기'
+
+
 def field(text,label):
-    match = re.search(r'(?:' + label + r')\s*[:：]?\s*(.{8,160})',text)
+    match = re.search(r'(?:' + label + r')\s*[:：]?\s*(.{2,160})',text)
     if not match:
         return '확인 필요'
-    value = re.split(r'홈페이지|공유하기|스크랩|지원자격|모집인원|근무지역|근무지|모집직무|전형절차|지원기간|접수기간|시상내역|활동혜택|활동지역|개인정보|더보기',match[1])[0].strip()
+    value = re.split(FIELD_BOUNDARY,match[1])[0].strip(' :：|')
     if not value or any(t in value for t in ('커뮤니티','조회','추천','광고')):
         return '확인 필요'
     return value[:80]
 
 
+def context(text, title, job=None):
+    if job and job.get('description'):
+        return plain(job['description'])[:3000]
+    position = text.find(title)
+    if position < 0:
+        return ''
+    value = text[position:position+3000]
+    return re.split(r'추천\s*공고|관련\s*공고|다른\s*공고|인기\s*공고|함께\s*보면|합격\s*자소서|합격\s*스펙|허위[·ㆍ]과장|이\s*공고를\s*스크랩|이\s*공고\s*조회자가|담당자\s*Q',value)[0]
+
+
 def extract(candidate,page):
     title = re.sub(r'^(추천|마감임박|신규)\s*','',plain(candidate['title']))[:180]
     title = re.sub(r'^(문학[•·]문예|디자인[•·]캐릭터|사진[•·]영상|기획[•·]아이디어)\s+','',title)
+    title = re.split(r'\s+주최\s*[:：]',title)[0]
+    title = re.sub(r'^\d+[.)]\s+','',title)
+    title = re.sub(r'\s*(?:\.{3}|…)\s*$','',title)
     if len(title) < 7:
         return None
     host = urlsplit(candidate['url']).hostname or ''
     path = urlsplit(candidate['url']).path
     # Portals, search pages and category boards are discovery sources, not individual notices.
-    if path in ('','/') or re.search(r'(?:/list(?:/|\.|$)|listpage|select\w*list|searchjob|recruitsearch|main\.(?:do|php)|/theme/|/product/)',path,re.I):
+    if path in ('','/') or path in ('/contest','/activity') and not urlsplit(candidate['url']).query or re.search(r'(?:/list(?:/|\.|$)|listpage|select\w*list|searchjob|recruitsearch|main\.(?:do|php)|/theme/|/product/)',path,re.I):
         return None
-    if host.endswith(('dcinside.com','reddit.com')) or re.search(r'후기|회고|채용정보시스템|채용정보 \||채용공고 \d+건|모집공고 <|신입·인턴 채용관|^홈\s*[|｜]|채용 홈페이지|참여자 모집 <|공모전 찾는 방법|맞춤법 검사|출품해도|공모전 세금|수상하게 되면',title):
+    if host.endswith(('dcinside.com','reddit.com','namu.wiki','wikipedia.org')) or re.search(r'후기|회고|예고편|한국 영화|홈페이지 빌더|대행서비스 안내|홍보[·ㆍ]운영대행|채용정보시스템|채용정보 \||채용공고 \d+건|모집공고 <|신입·인턴 채용관|^홈\s*[|｜]|채용 홈페이지|참여자 모집 <|공모전 찾는 방법|맞춤법 검사|출품해도|공모전 세금|수상하게 되면',title):
         return None
     text = page.get('text','')
     job = structured_job(page.get('structured',[]))
@@ -139,12 +161,21 @@ def extract(candidate,page):
         return None
     if any(t in title for t in ('접수종료','모집종료','채용종료','기업 지원사업','사업화 지원금')):
         return None
-    organization = '확인 필요'
-    closing, closing_evidence = deadline(text)
+    notice_context = context(text,title)
+    relevant = notice_context or context(text,title,job)
+    if job:
+        metadata_context = context(text,title,job)
+        if metadata_context and metadata_context not in relevant:
+            relevant = (relevant + ' ' + metadata_context)[:3500]
+    # Only the notice's own bounded content supplies ranking and field evidence.
+    details = relevant or title
+    organization = field(details,'주최(?:/주관)?|주관|기업명|회사명|기관명')
+    closing, closing_evidence = deadline(details)
     if job:
         organization = plain((job.get('hiringOrganization') or {}).get('name','확인 필요')) if isinstance(job.get('hiringOrganization'),dict) else '확인 필요'
         value = job.get('validThrough','')
-        if isinstance(value,str) and re.match(r'^20\d{2}-\d{2}-\d{2}',value):
+        rolling = re.search(r'채용\s*시\s*마감|채용\s*시까지|상시\s*(?:채용|모집)',details)
+        if not rolling and isinstance(value,str) and re.match(r'^20\d{2}-\d{2}-\d{2}',value) and not closing:
             try:
                 date.fromisoformat(value[:10])
                 closing = value[:10]
@@ -155,18 +186,37 @@ def extract(candidate,page):
     row.update(title=title,organizer=organization,edition=next(iter(re.findall(r'20\d{2}',title)),''),
         category=kind,url=net.canonical(candidate['url']),deadline=closing,
         deadline_text=closing_evidence or '접수 마감일 확인 필요',deadline_evidence=closing_evidence,
-        eligibility=field(text,'지원자격|참가대상|모집대상|응모자격'),
-        region=field(text,'활동지역|활동장소|근무지|근무지역|개최장소'),
-        benefit=field(text,'시상내역|활동혜택|참여혜택|급여|수당'),
+        eligibility=field(details,'지원자격|참가대상|모집대상|응모자격|자격요건'),
+        region=field(details,'활동지역|활동장소|근무지역|근무지|개최장소|대회지역'),
+        benefit=field(details,'시상내역|활동혜택|참여혜택|급여|수당'),
         summary=plain(job.get('description',''))[:120] if job else '공개 웹에서 발견한 모집 공고. 지원 조건은 아래 원문에서 확인하세요.',
         status='unknown')
+    row['context'] = relevant
+    if job and rolling and not closing:
+        row['deadline_text'] = '채용 시 마감·상시 · 정확한 종료일은 원문 확인'
+    if job:
+        locations = job.get('jobLocation',[])
+        if isinstance(locations,dict):
+            locations = [locations]
+        addresses = []
+        for place in locations if isinstance(locations,list) else []:
+            address = place.get('address',{}) if isinstance(place,dict) else {}
+            if isinstance(address,dict):
+                addresses.extend(str(address.get(k,'')) for k in ('addressRegion','addressLocality'))
+            elif isinstance(address,str):
+                addresses.append(address)
+        if any(addresses):
+            row['region'] = ' '.join(addresses)[:80]
+        if job.get('jobLocationType') == 'TELECOMMUTE':
+            row['region'] = '온라인·원격'
     visible = bool(page.get('ok') and state.norm(title) in state.norm(text))
     row.update(verified=visible,deadline_verified=bool(closing) and visible,
                verification=('원문 제목 대조 · 접수 마감 원문 추출' if closing else '원문 제목 대조 · 마감 추가 확인') if visible else page.get('reason','본문 확인 필요') + ' · 조건 재확인 필요')
     if visible:
-        location = text.find(title)
-        row['evidence'] = text[location:location+110] if location >= 0 else title
+        row['evidence'] = relevant[:110] if relevant else title
         row['status'] = 'open' if closing else 'unknown'
+        if re.search(r'모집이\s*종료되었습니다|접수가\s*종료되었습니다|접수\s*마감되었습니다|공고가\s*마감되었습니다',details):
+            row['status'] = 'closed'
     for link in page.get('links',[]):
         if re.fullmatch(r'\s*(공지사항|채용공고|모집공고|Notice|채용정보)\s*',link['title'],re.I):
             row['board_url'] = link['url']
@@ -174,10 +224,10 @@ def extract(candidate,page):
     return row
 
 
-def discover(today,candidates,plan):
+def discover(today,candidates,plan,profile=None):
     found, coverage = [], []
     with ThreadPoolExecutor(max_workers=4) as pool:
-        for rows,status in pool.map(search,queries(plan)):
+        for rows,status in pool.map(search,queries(plan,profile)):
             found.extend(rows)
             coverage.append(status)
     found.extend(candidates)
@@ -192,10 +242,23 @@ def discover(today,candidates,plan):
         kind = category(candidate['title'] + ' ' + candidate.get('description',''))
         buckets[kind].append(candidate)
     balanced = []
+    if profile:
+        focused = sorted(unique.values(),key=lambda r:-ranking.discover_priority(r,profile))
+        domains = {}
+        for candidate in focused:
+            host = urlsplit(candidate['url']).hostname
+            if ranking.discover_priority(candidate,profile) <= 0 or len(balanced) >= 20:
+                break
+            if domains.get(host,0) >= 8:
+                continue
+            balanced.append(candidate)
+            domains[host] = domains.get(host,0)+1
+    picked = {r['url'] for r in balanced}
     for index in range(60):
         for bucket in buckets.values():
-            if index < len(bucket) and len(balanced) < 40:
+            if index < len(bucket) and len(balanced) < 40 and bucket[index]['url'] not in picked:
                 balanced.append(bucket[index])
+                picked.add(bucket[index]['url'])
     fetched = net.pages([r['url'] for r in balanced])
     rows = []
     extra = {}
@@ -209,14 +272,17 @@ def discover(today,candidates,plan):
             for link in page.get('links',[]):
                 if category(link['title']) and len(link['title']) >= 8 and link['url'] not in fetched:
                     extra.setdefault(link['url'],{**link,'source':'새로 발견한 게시판','description':''})
-    second = list(extra.values())[:20]
+    second = list(extra.values())
+    if profile:
+        second.sort(key=lambda r:-ranking.discover_priority(r,profile))
+    second = second[:20]
     additional = net.pages([r['url'] for r in second])
     for candidate in second:
         row = extract(candidate,additional[candidate['url']])
         if row and (not row['deadline'] or row['deadline'] >= today.isoformat()):
             rows.append(row)
     broad_ok = any(r['ok'] for r in coverage)
-    return rows, coverage, {'queries':queries(plan),'successful_queries':sum(r['ok'] for r in coverage),
+    return rows, coverage, {'queries':queries(plan,profile),'successful_queries':sum(r['ok'] for r in coverage),
             'discovered_domains':len({urlsplit(r['url']).hostname for r in found}),
             'candidate_count':len(unique),'web_search_ok':broad_ok,
             'provider':'NAVER' if os.environ.get('NAVER_CLIENT_ID') and os.environ.get('NAVER_CLIENT_SECRET') else 'Bing RSS'}

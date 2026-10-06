@@ -76,10 +76,10 @@ def select(rows, saved_state, today):
     for row in deduplicate(rows):
         key = known_urls.get((net.canonical(row["url"]), edition_key(row)), row["id"])
         row = {**row, "id": key}
-        if row.get("deadline_verified") and row["deadline"] < today.isoformat():
-            continue
         previous = saved_state["items"].get(key)
         updates[key] = row
+        if row.get("status") in ("closed", "expired") or row.get("deadline_verified") and row["deadline"] < today.isoformat():
+            continue
         if not previous:
             selected.append({**row, "notice": "새 공고"})
         elif row.get("deadline_verified") and row["deadline"] != previous["data"].get("deadline"):
@@ -91,6 +91,8 @@ def select(rows, saved_state, today):
     # Saved events remain eligible for reminders even if absent from today's searches.
     for key, previous in saved_state["items"].items():
         row = updates.get(key, previous["data"])
+        if row.get("status") in ("closed", "expired"):
+            continue
         if not row.get("deadline_verified") or not row.get("deadline"):
             continue
         remaining = (date.fromisoformat(row["deadline"]) - today).days
@@ -109,9 +111,10 @@ def acknowledge(saved_state, selected, updates, today, message_id, new_sources):
     for key, row in updates.items():
         if key in saved_state["items"]:
             saved_state["items"][key]["data"] = row
+            saved_state["items"][key]["last_seen"] = today.isoformat()
     for row in selected:
         saved = saved_state["items"].setdefault(row["id"], {"data": row, "first_sent": today.isoformat(), "alerts": []})
-        saved.update(data={k: v for k, v in row.items() if k not in ("notice", "alert")}, last_sent=today.isoformat())
+        saved.update(data={k: v for k, v in row.items() if k not in ("notice", "alert")}, last_sent=today.isoformat(), last_seen=today.isoformat())
         if row.get("alert") and row["alert"] not in saved["alerts"]:
             saved["alerts"].append(row["alert"])
     cutoff = (today - timedelta(days=240)).isoformat()

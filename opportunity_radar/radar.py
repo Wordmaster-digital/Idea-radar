@@ -13,6 +13,7 @@ import sources
 import state
 import verify
 import cloud_discovery
+import ranking
 
 for stream in (sys.stdout, sys.stderr):
     if hasattr(stream, 'reconfigure'):
@@ -20,7 +21,7 @@ for stream in (sys.stdout, sys.stderr):
 
 ROOT = Path(__file__).resolve().parent
 KST = timezone(timedelta(hours=9))
-SETTINGS = {"DISCORD_WEBHOOK_URL", "OPPORTUNITY_MODEL", "OPPORTUNITY_CODEX_BIN", "OPPORTUNITY_REPORT_FONT", "OPPORTUNITY_LLM_MODE", "NAVER_CLIENT_ID", "NAVER_CLIENT_SECRET"}
+SETTINGS = {"DISCORD_WEBHOOK_URL", "OPPORTUNITY_MODEL", "OPPORTUNITY_CODEX_BIN", "OPPORTUNITY_REPORT_FONT", "OPPORTUNITY_LLM_MODE", "OPPORTUNITY_PROFILE_JSON", "NAVER_CLIENT_ID", "NAVER_CLIENT_SECRET"}
 
 
 def settings(path):
@@ -79,9 +80,12 @@ def fallback(candidates):
     return rows
 
 
-def commit_delivery(path, saved, selected, updates, today, message_id, boards):
+def commit_delivery(path, saved, selected, updates, today, message_id, boards, briefing=None):
     # Called only after the single Discord message (including attachment) is acknowledged.
     state.acknowledge(saved, selected, updates, today, message_id, boards)
+    saved['digest_version'] = ranking.FORMAT_VERSION
+    if briefing:
+        saved['recommendations'] = [{'id':r['id'],'rank':r['rank'],'score':r['fit_score']} for r in briefing['top10']]
     state.save(path, saved)
 
 
@@ -90,13 +94,14 @@ def run(args):
     data_root = Path(args.data_dir).resolve() if args.data_dir else ROOT
     state_path = data_root / "state" / "seen.json"
     saved = state.load(state_path)
-    if not args.dry_run and not args.force and saved.get("last_delivery") == today.isoformat():
+    if not args.dry_run and not args.force and saved.get("last_delivery") == today.isoformat() and saved.get('digest_version',1) >= ranking.FORMAT_VERSION:
         print("오늘의 기회 레이더는 이미 발송했습니다")
         return 0
     candidates, coverage, search_plan = sources.collect(today, saved["sources"])
+    profile = ranking.load_profile()
     degraded, search_coverage, usage, searches, cloud_stats = "", [], [], [], {}
     if args.cloud:
-        rows, web_coverage, cloud_stats = cloud_discovery.discover(today,candidates,search_plan)
+        rows, web_coverage, cloud_stats = cloud_discovery.discover(today,candidates,search_plan,profile)
         coverage.extend(web_coverage)
         if not cloud_stats['web_search_ok']:
             degraded = '웹 검색 채널 조회 실패 · 직접 공지·뉴스 수집 범위만 포함'
@@ -118,13 +123,20 @@ def run(args):
             days = (date.fromisoformat(row["deadline"]) - today).days
             if days in (7, 3, 1):
                 due.append(row)
-    rows.extend(cloud_discovery.refresh(due,today) if args.cloud else verify.verify(due))
+    if args.cloud:
+        previous = ranking.refresh_candidates(saved,rows,profile,today)
+        previous = state.deduplicate(due+previous)[:30]
+        rows.extend(cloud_discovery.refresh(previous,today))
+    else:
+        rows.extend(verify.verify(due))
     selected, updates = state.select(rows, saved, today)
+    briefing = ranking.briefing(saved,updates,selected,profile,today)
     boards = verify.new_boards(rows, saved["sources"])
     report = {"date": today.isoformat(), "selected": selected, "all_discovered": rows,
               "coverage": coverage, "plan": search_plan, "search_coverage": search_coverage,
               "usage": usage, "searches": searches, "new_sources": boards, "degraded": degraded,
               "cloud_stats": cloud_stats,
+              "briefing": briefing,
               "delivery": "미리보기 · 발송하지 않음" if args.dry_run else "발송 대기"}
     raw, attachment = delivery.write_report(data_root / "reports", report)
     print(f'발견 {len(rows)}건 / 알림 {len(selected)}건 / 새 게시판 {len(boards)}개')
@@ -135,10 +147,10 @@ def run(args):
         print("미리보기 완료: 발송·발송 기록 변경 없음")
         return 0
     webhook = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
-    message_id = delivery.send(webhook, delivery.summary(report), attachment)
+    message_id = delivery.send(webhook, delivery.summary(report), attachment, embeds=delivery.embeds(report))
     # Preserve acknowledgement in the report before updating the deduplication state.
     report.update(delivery="Discord 수신 확인", message_id=message_id)
-    commit_delivery(state_path, saved, selected, updates, today, message_id, boards)
+    commit_delivery(state_path, saved, selected, updates, today, message_id, boards, briefing)
     raw.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f'Discord 발송 확인: {message_id}')
     return 0
@@ -149,7 +161,7 @@ def send_saved(args):
     data_root = Path(args.data_dir).resolve() if args.data_dir else ROOT
     state_path = data_root / 'state' / 'seen.json'
     saved = state.load(state_path)
-    if not args.force and saved.get('last_delivery') == today.isoformat():
+    if not args.force and saved.get('last_delivery') == today.isoformat() and saved.get('digest_version',1) >= ranking.FORMAT_VERSION:
         print('오늘의 기회 레이더는 이미 발송했습니다')
         return 0
     report = json.loads(Path(args.send_report).read_text(encoding='utf-8'))
@@ -158,11 +170,12 @@ def send_saved(args):
     rows = (cloud_discovery.refresh(report['all_discovered'],today)
             if report.get('cloud_stats') else verify.verify(report['all_discovered']))
     selected, updates = state.select(rows, saved, today)
+    briefing = ranking.briefing(saved,updates,selected,ranking.load_profile(),today)
     boards = verify.new_boards(rows, saved['sources'])
-    report.update(selected=selected, all_discovered=rows, new_sources=boards, delivery='발송 대기')
+    report.update(selected=selected, all_discovered=rows, new_sources=boards, briefing=briefing, delivery='발송 대기')
     raw, attachment = delivery.write_report(data_root / 'reports', report)
-    message_id = delivery.send(os.environ.get('DISCORD_WEBHOOK_URL',''), delivery.summary(report), attachment)
-    commit_delivery(state_path, saved, selected, updates, today, message_id, boards)
+    message_id = delivery.send(os.environ.get('DISCORD_WEBHOOK_URL',''), delivery.summary(report), attachment, embeds=delivery.embeds(report))
+    commit_delivery(state_path, saved, selected, updates, today, message_id, boards, briefing)
     report.update(delivery='Discord 수신 확인',message_id=message_id)
     raw.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
     print(f'Discord 발송 확인: {message_id} (추가 AI 호출 없음)')
