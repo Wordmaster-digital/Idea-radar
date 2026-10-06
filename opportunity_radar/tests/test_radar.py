@@ -229,7 +229,7 @@ class FlowTests(unittest.TestCase):
             radar.run(args)
             self.assertEqual(state.load(Path(tmp)/'state'/'seen.json')['message_id'],'111222')
             radar.run(args)
-            self.assertEqual(send.call_count,1)
+            self.assertEqual(send.call_count,2)
             self.assertEqual(discovery.discover.call_count,1)
 
     def test_installer_strict_preview_rejects_reduced_search(self):

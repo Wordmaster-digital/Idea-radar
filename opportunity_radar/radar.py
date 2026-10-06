@@ -14,6 +14,7 @@ import state
 import verify
 import cloud_discovery
 import ranking
+import streams
 
 for stream in (sys.stdout, sys.stderr):
     if hasattr(stream, 'reconfigure'):
@@ -94,7 +95,7 @@ def run(args):
     data_root = Path(args.data_dir).resolve() if args.data_dir else ROOT
     state_path = data_root / "state" / "seen.json"
     saved = state.load(state_path)
-    if not args.dry_run and not args.force and saved.get("last_delivery") == today.isoformat() and saved.get('digest_version',1) >= ranking.FORMAT_VERSION:
+    if not args.dry_run and not args.force and streams.complete(saved, today):
         print("오늘의 기회 레이더는 이미 발송했습니다")
         return 0
     candidates, coverage, search_plan = sources.collect(today, saved["sources"])
@@ -130,29 +131,42 @@ def run(args):
     else:
         rows.extend(verify.verify(due))
     selected, updates = state.select(rows, saved, today)
-    briefing = ranking.briefing(saved,updates,selected,profile,today)
     boards = verify.new_boards(rows, saved["sources"])
     report = {"date": today.isoformat(), "selected": selected, "all_discovered": rows,
               "coverage": coverage, "plan": search_plan, "search_coverage": search_coverage,
               "usage": usage, "searches": searches, "new_sources": boards, "degraded": degraded,
               "cloud_stats": cloud_stats,
-              "briefing": briefing,
               "delivery": "미리보기 · 발송하지 않음" if args.dry_run else "발송 대기"}
-    raw, attachment = delivery.write_report(data_root / "reports", report)
     print(f'발견 {len(rows)}건 / 알림 {len(selected)}건 / 새 게시판 {len(boards)}개')
-    print(f'보고서: {attachment}')
     if args.require_discovery and degraded:
         raise RuntimeError("전체 웹 검색을 완료하지 못했습니다: " + degraded)
+    return send_groups(args, data_root, state_path, saved, report, updates, selected, profile, today, boards)
+
+
+def send_groups(args, data_root, state_path, saved, report, updates, selected, profile, today, boards):
+    failures = []
+    for group, part, changed in streams.reports(report, saved, updates, selected, profile, today):
+        already_sent = not args.dry_run and not args.force and streams.delivered(saved, group, today)
+        if already_sent:
+            part.update(delivery='오늘 이미 발송', message_id=saved['deliveries'][group]['message_id'])
+        raw, attachment = delivery.write_report(data_root / 'reports', part)
+        print(f'{streams.LABELS[group]} 보고서: {attachment}')
+        if args.dry_run or already_sent:
+            continue
+        try:
+            message_id = delivery.send(os.environ.get('DISCORD_WEBHOOK_URL', '').strip(),
+                                       delivery.summary(part), attachment, embeds=delivery.embeds(part))
+            streams.acknowledge(state_path, saved, part, changed, today, message_id, boards)
+            part.update(delivery='Discord 수신 확인', message_id=message_id)
+            print(f'Discord 발송 확인 [{group}]: {message_id}')
+        except RuntimeError as error:
+            part.update(delivery='발송 또는 수신 확인 실패', error=str(error))
+            failures.append(streams.LABELS[group] + ': ' + str(error))
+        raw.write_text(json.dumps(part, ensure_ascii=False, indent=2), encoding='utf-8')
+    if failures:
+        raise RuntimeError(' / '.join(failures))
     if args.dry_run:
-        print("미리보기 완료: 발송·발송 기록 변경 없음")
-        return 0
-    webhook = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
-    message_id = delivery.send(webhook, delivery.summary(report), attachment, embeds=delivery.embeds(report))
-    # Preserve acknowledgement in the report before updating the deduplication state.
-    report.update(delivery="Discord 수신 확인", message_id=message_id)
-    commit_delivery(state_path, saved, selected, updates, today, message_id, boards, briefing)
-    raw.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f'Discord 발송 확인: {message_id}')
+        print('미리보기 완료: 발송·발송 기록 변경 없음')
     return 0
 
 
@@ -161,25 +175,21 @@ def send_saved(args):
     data_root = Path(args.data_dir).resolve() if args.data_dir else ROOT
     state_path = data_root / 'state' / 'seen.json'
     saved = state.load(state_path)
-    if not args.force and saved.get('last_delivery') == today.isoformat() and saved.get('digest_version',1) >= ranking.FORMAT_VERSION:
+    if not args.force and streams.complete(saved, today):
         print('오늘의 기회 레이더는 이미 발송했습니다')
         return 0
     report = json.loads(Path(args.send_report).read_text(encoding='utf-8'))
     if report.get('date') != today.isoformat() or report.get('degraded'):
         raise RuntimeError('오늘 전체 검색을 완료한 미리보기 보고서가 필요합니다')
-    rows = (cloud_discovery.refresh(report['all_discovered'],today)
-            if report.get('cloud_stats') else verify.verify(report['all_discovered']))
+    collected = report.get('collection', report['all_discovered'])
+    rows = (cloud_discovery.refresh(collected,today)
+            if report.get('cloud_stats') else verify.verify(collected))
     selected, updates = state.select(rows, saved, today)
-    briefing = ranking.briefing(saved,updates,selected,ranking.load_profile(),today)
     boards = verify.new_boards(rows, saved['sources'])
-    report.update(selected=selected, all_discovered=rows, new_sources=boards, briefing=briefing, delivery='발송 대기')
-    raw, attachment = delivery.write_report(data_root / 'reports', report)
-    message_id = delivery.send(os.environ.get('DISCORD_WEBHOOK_URL',''), delivery.summary(report), attachment, embeds=delivery.embeds(report))
-    commit_delivery(state_path, saved, selected, updates, today, message_id, boards, briefing)
-    report.update(delivery='Discord 수신 확인',message_id=message_id)
-    raw.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
-    print(f'Discord 발송 확인: {message_id} (추가 AI 호출 없음)')
-    return 0
+    for key in ('briefing','delivery_group','format_transition','label','pool_count','pdf_fallback'):
+        report.pop(key, None)
+    report.update(selected=selected, all_discovered=rows, new_sources=boards, delivery='발송 대기')
+    return send_groups(args, data_root, state_path, saved, report, updates, selected, ranking.load_profile(), today, boards)
 
 
 def main(argv=None):

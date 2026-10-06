@@ -47,6 +47,15 @@ def load(path):
                 date.fromisoformat(row['data']['deadline'])
         if not all(isinstance(r,dict) and isinstance(r.get('name'),str) and isinstance(r.get('url'),str) for r in data['sources']):
             raise ValueError()
+        receipts = data.get('deliveries', {})
+        if not isinstance(receipts, dict):
+            raise ValueError()
+        for group, receipt in receipts.items():
+            if group not in ('activities', 'career') or not isinstance(receipt, dict):
+                raise ValueError()
+            date.fromisoformat(receipt['date'])
+            if not str(receipt.get('message_id', '')).isdigit() or receipt.get('version') != 3:
+                raise ValueError()
         return data
     except (ValueError, OSError, AttributeError, KeyError, TypeError):
         raise RuntimeError("발송 기록이 손상되었습니다. 기록을 보존한 채 복구해야 합니다") from None

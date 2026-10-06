@@ -47,12 +47,12 @@ jobs:
           PYTHONUTF8: '1'
         run: python radar.py --cloud
       - name: Save acknowledged opportunity state
-        if: success()
+        if: always() && hashFiles('opportunity_radar/state/seen.json') != ''
         uses: actions/cache/save@v6
         with:
           path: opportunity_radar/state
           key: opportunity-seen-v1-${{ github.run_id }}-${{ github.run_attempt }}
-      - name: Confirm the delivered Discord message
+      - name: Confirm both delivered Discord messages
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.OPPORTUNITY_DISCORD_WEBHOOK_URL || secrets.DISCORD_WEBHOOK_URL }}
           PYTHONUTF8: '1'
@@ -64,36 +64,50 @@ jobs:
           from urllib.parse import urlsplit, urlunsplit
           from urllib.request import Request, urlopen
           saved = json.loads(Path('state/seen.json').read_text(encoding='utf-8'))
-          message_id = str(saved.get('message_id', ''))
           p = urlsplit(os.environ['DISCORD_WEBHOOK_URL'])
-          if (not message_id.isdigit() or p.scheme != 'https' or p.username or p.password
+          if (p.scheme != 'https' or p.username or p.password
               or p.port not in (None,443) or p.hostname not in ('discord.com','discordapp.com')
               or not re.fullmatch(r'/api/webhooks/\d+/[\w-]+',p.path)):
               raise SystemExit('Discord receipt verification settings are invalid')
-          url = urlunsplit((p.scheme,p.netloc,p.path+'/messages/'+message_id,'',''))
-          try:
-              req = Request(url,headers={'User-Agent':'OpportunityRadar/1.0 (+https://github.com/Wordmaster-digital/Idea-radar)'})
-              with urlopen(req,timeout=30) as response:
-                  message = json.load(response)
-          except HTTPError as error:
-              raise SystemExit('Discord receipt verification HTTP '+str(error.code)) from None
-          except Exception as error:
-              raise SystemExit('Discord receipt verification failed: '+type(error).__name__) from None
-          attachments = message.get('attachments',[])
-          if (str(message.get('id')) != message_id or not message.get('content','').startswith('🧭 기회 레이더')
-              or not any(a.get('filename','').endswith(('.pdf','.md')) for a in attachments)):
-              raise SystemExit('Discord receipt does not match the expected report')
-          expected = len(saved.get('recommendations',[]))
-          cards = sum(len(e.get('fields',[])) for e in message.get('embeds',[]))
-          if saved.get('digest_version',1) >= 2 and cards != expected:
-              raise SystemExit('Discord recommendation cards do not match the saved ranking')
-          print('Discord receipt verified: '+message_id)
-          print('Report attachment verified: '+str(len(attachments)))
-          print('Top recommendations verified: '+str(cards))
-          with open(os.environ['GITHUB_STEP_SUMMARY'],'a',encoding='utf-8') as summary:
-              summary.write('## Discord receipt verified\n\nMessage ID: '+message_id+
-                            '\n\nReport attachment: present\n\nTop recommendation cards: '+str(cards)+
-                            '\n\nDelivery date: '+saved['last_delivery']+'\n')
+          from datetime import datetime, timedelta, timezone
+          today = datetime.now(timezone(timedelta(hours=9))).date().isoformat()
+          for group,label in [('activities','공모전·대외활동'),('career','인턴·일경험·채용')]:
+              receipt = saved.get('deliveries',{}).get(group,{})
+              message_id = str(receipt.get('message_id',''))
+              if receipt.get('date') != today or receipt.get('version') != 3 or not message_id.isdigit():
+                  raise SystemExit('Missing current split-format Discord receipt: '+group)
+              url = urlunsplit((p.scheme,p.netloc,p.path+'/messages/'+message_id,'',''))
+              try:
+                  req = Request(url,headers={'User-Agent':'OpportunityRadar/1.0 (+https://github.com/Wordmaster-digital/Idea-radar)'})
+                  with urlopen(req,timeout=30) as response:
+                      message = json.load(response)
+              except HTTPError as error:
+                  raise SystemExit('Discord receipt verification HTTP '+str(error.code)) from None
+              except Exception as error:
+                  raise SystemExit('Discord receipt verification failed: '+type(error).__name__) from None
+              attachments = message.get('attachments',[])
+              embeds = message.get('embeds',[])
+              cards = sum(len(e.get('fields',[])) for e in embeds)
+              if (str(message.get('id')) != message_id
+                  or not message.get('content','').startswith('🧭 기회 레이더 · '+label+' · ')
+                  or not any(a.get('filename','').endswith(('.pdf','.md')) for a in attachments)
+                  or cards != receipt.get('top_count',0)
+                  or group == 'activities' and embeds):
+                  raise SystemExit('Discord receipt does not match the expected '+group+' report')
+              if group == 'career':
+                  for embed in embeds:
+                      for field in embed.get('fields',[]):
+                          if field['value'].splitlines()[0].split(' · ')[1] not in ('인턴','일경험','채용'):
+                              raise SystemExit('Non-work opportunity found in career recommendation cards')
+              print('Discord receipt verified ['+group+']: '+message_id)
+              print('Report attachment verified ['+group+']: '+str(len(attachments)))
+              print('Top recommendations verified ['+group+']: '+str(cards))
+              with open(os.environ['GITHUB_STEP_SUMMARY'],'a',encoding='utf-8') as summary:
+                  summary.write('## '+label+' receipt verified\n\nMessage ID: '+message_id+
+                                '\n\nFormat: '+receipt['format']+'\n\nReport attachment: present'+
+                                '\n\nTop recommendation cards: '+str(cards)+
+                                '\n\nCurrent candidates: '+str(receipt.get('pool_count',0))+
+                                '\n\nDelivery date: '+receipt['date']+'\n\n')
           PY
       - name: Show collection and delivery result
         if: always()
@@ -101,15 +115,17 @@ jobs:
           python - <<'PY'
           import json, os
           from pathlib import Path
-          files = sorted(Path('reports').glob('*.json'))
-          if files:
+          for group in ('activities','career'):
+              files = sorted(Path('reports').glob('*_'+group+'.json'))
+              if not files:
+                  continue
               report = json.loads(files[-1].read_text(encoding='utf-8'))
               stats = report.get('cloud_stats', {})
-              lines = ['## Opportunity Radar',
+              lines = ['## '+report['label'],
                        'Date: ' + report['date'],
                        'Discovered: ' + str(len(report['all_discovered'])),
                        'Notifications: ' + str(len(report['selected'])),
-                       'Open accumulated candidates: ' + str(report.get('briefing',{}).get('pool_count',0)),
+                       'Open accumulated candidates: ' + str(report.get('pool_count',0)),
                        'Top career recommendations: ' + str(len(report.get('briefing',{}).get('top10',[]))),
                        'Other classified candidates: ' + str(len(report.get('briefing',{}).get('remaining',[]))),
                        'Delivery: ' + report['delivery'],

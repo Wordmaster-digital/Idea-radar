@@ -1,4 +1,4 @@
-"""Korean report and a single acknowledged Discord message, no extra AI."""
+"""Korean activity lists and ranked work reports, one message per group."""
 from datetime import datetime
 import html
 import json
@@ -20,8 +20,10 @@ def markdown(report):
         return ranked_markdown(report)
     rows = report["selected"]
     good = sum(r.get("ok", False) for r in report["coverage"])
-    lines = [f'# 기회 레이더 · {report["date"]}', "",
-             f'새 공고·변경·마감 알림 {len(rows)}건 | 출처 조회 {good}/{len(report["coverage"])} 성공',
+    label = report.get('label', '')
+    count_label = '현재 공고·형식 전환 안내' if report.get('format_transition') else '새 공고·변경·마감 알림'
+    lines = [f'# 기회 레이더{(" · " + label) if label else ""} · {report["date"]}', "",
+             f'{count_label} {len(rows)}건 | 출처 조회 {good}/{len(report["coverage"])} 성공',
              f'오늘 추가 탐색: {report["plan"]["region"]} / {report["plan"]["field"]}', "",
              "검색 범위는 매일 순환합니다. 결과 없음·접속 실패는 기회가 없다는 뜻이 아닙니다.", ""]
     if report.get("degraded"):
@@ -61,7 +63,9 @@ def summary(report):
     if report.get('briefing'):
         return ranked_summary(report)
     rows = report["selected"]
-    lines = [f'🧭 기회 레이더 · {report["date"]}', f'새 공고·변경·마감 알림 {len(rows)}건']
+    label = report.get('label', '')
+    count_label = '현재 공고·형식 전환 안내' if report.get('format_transition') else '새 공고·변경·마감 알림'
+    lines = [f'🧭 기회 레이더{(" · " + label) if label else ""} · {report["date"]}', f'{count_label} {len(rows)}건']
     if report.get("degraded"):
         lines.append("⚠ 웹 전체 탐색을 완료하지 못했습니다. 발견 후보와 수집 상태를 첨부합니다.")
     for row in rows[:7]:
@@ -85,7 +89,7 @@ def summary(report):
 def ranked_markdown(report):
     briefing = report['briefing']
     profile = briefing['profile']
-    lines = [f'# 기회 레이더 · {report["date"]}', '',
+    lines = [f'# 기회 레이더{(" · " + report["label"]) if report.get("label") else ""} · {report["date"]}', '',
              f'누적 유효 후보 {briefing["pool_count"]}건 · 오늘 새 공고/변경/마감 알림 {len(report["selected"])}건',
              '추천 직무: ' + clean(' / '.join(profile['target_roles'])),
              '우선 지역: ' + clean(' / '.join(profile['preferred_regions'] + profile['nearby_regions'])) + ' · 전국/온라인 포함',
@@ -145,7 +149,7 @@ def ranked_markdown(report):
 
 def ranked_summary(report):
     briefing = report['briefing']
-    lines = [f'🧭 기회 레이더 · {report["date"]}',
+    lines = [f'🧭 기회 레이더{(" · " + report["label"]) if report.get("label") else ""} · {report["date"]}',
              f'직무 추천 TOP {len(briefing["top10"])} · 그 외 후보 {len(briefing["remaining"])}건',
              'KOTRA·무역·글로벌마케팅·마케팅 기획 / 영어 활용 / 세종 인근·수도권·경기 우선',
              f'누적 유효 후보 {briefing["pool_count"]}건 중 비교 · 오늘 새 공고/변경/마감 알림 {len(report["selected"])}건', '',
@@ -172,7 +176,8 @@ def embeds(report):
         value += clean(' / '.join(row['fit_warnings'][:2]),100)
         link = '\n[공고 원문](' + row['url'] + ')' if len(row['url']) <= 220 else '\n공고 원문은 첨부 보고서에서 확인'
         fields.append({'name':clean(f'{row["rank"]}위 · {row["title"]}',120), 'value':value[:420-len(link)]+link, 'inline':False})
-    return [{'title':'내 직무와 연결되는 TOP 10', 'description':f'누적 유효 후보 {briefing["pool_count"]}건에서 최대 10개 선정. 상세 근거·조건·나머지 분야별/기관별 목록은 PDF에 있습니다.',
+    title = '내 직무와 연결되는 인턴·일경험 TOP 10' if report.get('delivery_group') == 'career' else '내 직무와 연결되는 TOP 10'
+    return [{'title':title, 'description':f'누적 유효 후보 {briefing["pool_count"]}건에서 최대 10개 선정. 상세 근거·조건·나머지 분야별/기관별 목록은 PDF에 있습니다.',
              'color':0x2563EB, 'fields':fields,
              'footer':{'text':'직무 40 · 영어 15 · 지역 20 · 경험 15 · 원문/실무 10 | 합격 확률·자격 판정이 아닙니다'}}]
 
@@ -204,7 +209,7 @@ def pdf(path, text):
         canvas.saveState()
         canvas.setFont('Opportunity',8)
         canvas.setFillColorRGB(0.4,0.4,0.4)
-        canvas.drawString(40,24,'기회 레이더 · 직무 우선순위와 분야·기관별 목록')
+        canvas.drawString(40,24,'기회 레이더 · 공고와 지원 조건')
         canvas.drawRightString(A4[0]-40,24,str(doc.page))
         canvas.restoreState()
     SimpleDocTemplate(str(path), pagesize=A4, rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40).build(story,onFirstPage=footer,onLaterPages=footer)
@@ -212,7 +217,9 @@ def pdf(path, text):
 
 def write_report(root, report):
     root.mkdir(parents=True, exist_ok=True)
-    stem = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    stem = datetime.now().strftime("%Y-%m-%d_%H%M%S_%f")
+    if report.get('delivery_group'):
+        stem += '_' + report['delivery_group']
     text = markdown(report)
     md = root / (stem + ".md")
     md.write_text(text, encoding="utf-8")
