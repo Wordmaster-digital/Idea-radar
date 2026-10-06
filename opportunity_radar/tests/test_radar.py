@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+import io
 import json
 import os
 from pathlib import Path
@@ -143,6 +144,18 @@ class DeliveryTests(unittest.TestCase):
                 self.assertIn(b'"parse": []', request.data)
                 self.assertIn("wait=true", request.full_url)
                 self.assertEqual(opened.call_count, 1)
+
+    def test_http_failure_reports_status_without_webhook_or_body_and_no_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            attachment = Path(tmp) / "report.md"
+            attachment.write_text("보고서", encoding="utf-8")
+            url = "https://discord.com/api/webhooks/123/secret"
+            error = delivery.HTTPError(url, 404, "secret", {}, io.BytesIO(b'{"code":10015,"message":"secret"}'))
+            with patch("delivery.urlopen", side_effect=error) as opened:
+                with self.assertRaisesRegex(RuntimeError, "HTTP 404.*10015") as failure:
+                    delivery.send(url, "알림", attachment)
+            self.assertNotIn("secret", str(failure.exception))
+            self.assertEqual(opened.call_count, 1)
 
     def test_missing_ack_is_failure_no_retry(self):
         with tempfile.TemporaryDirectory() as tmp:
