@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "target_roles": ["KOTRA 글로벌마케팅", "무역·해외마케팅", "마케팅 기획"],
+  "preferred_regions": ["세종", "서울", "경기", "인천"],
+  "nearby_regions": ["대전", "청주", "공주", "천안", "오송"],
+  "languages": ["영어"],
+  "experience_topics": ["제품 제작·검증", "광고·메시지 기획", "아이디어·사업성 검토"],
+  "confirmed_requirements": {},
+  "weights": {"career": 40, "language": 15, "region": 20, "experience": 15, "evidence": 10},
+  "basis": "사용자가 지정한 희망 직무·지역·언어와 이전에 직접 설명한 활동 주제. 학년·어학 점수·경력 연수는 미확인."
+}

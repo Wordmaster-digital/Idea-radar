@@ -70,7 +70,7 @@ class PageText(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
-        if tag in ("script", "style", "noscript"):
+        if tag in ("head", "script", "style", "noscript"):
             self.hidden += 1
         if tag == 'script' and attrs.get('type') == 'application/ld+json':
             self.json_script, self.script_parts = True, []
@@ -84,7 +84,7 @@ class PageText(HTMLParser):
             except ValueError:
                 pass
             self.json_script = False
-        if tag in ("script", "style", "noscript") and self.hidden:
+        if tag in ("head", "script", "style", "noscript") and self.hidden:
             self.hidden -= 1
         if tag == "a" and self.anchor:
             self.links.append({"url": self.anchor[0], "title": " ".join(self.anchor[1]).strip()})
