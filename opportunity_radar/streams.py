@@ -24,8 +24,9 @@ def complete(saved, today):
     return all(delivered(saved, group, today) for group in GROUPS)
 
 
-def scoped_state(saved, group):
-    items = {key: value for key, value in saved['items'].items() if belongs(value['data'], group)}
+def scoped_state(saved, group, updates=None):
+    updates = updates or {}
+    items = {key: value for key, value in saved['items'].items() if belongs(updates.get(key, value['data']), group)}
     history = saved.get('deliveries', {}).get(group, {}).get('recommendations', saved.get('recommendations', []))
     return {**saved, 'items': items, 'recommendations': [r for r in history if r['id'] in items]}
 
@@ -33,7 +34,7 @@ def scoped_state(saved, group):
 def reports(common, saved, updates, selected, profile, today):
     result = []
     for group in GROUPS:
-        scoped = scoped_state(saved, group)
+        scoped = scoped_state(saved, group, updates)
         changed = {key: row for key, row in updates.items() if belongs(row, group)}
         notices = [row for row in selected if belongs(row, group)]
         current = ranking.pool(scoped, changed, today)
