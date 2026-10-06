@@ -1,0 +1,29 @@
+name: Opportunity Radar Tests
+
+on:
+  pull_request:
+    paths:
+      - 'opportunity_radar/**'
+      - '.github/workflows/opportunity_*.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'opportunity_radar/**'
+      - '.github/workflows/opportunity_*.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r opportunity_radar/requirements.txt
+      - run: python -m unittest discover -s opportunity_radar/tests -v
