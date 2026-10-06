@@ -14,6 +14,10 @@ import state
 import verify
 import cloud_discovery
 
+for stream in (sys.stdout, sys.stderr):
+    if hasattr(stream, 'reconfigure'):
+        stream.reconfigure(encoding='utf-8')
+
 ROOT = Path(__file__).resolve().parent
 KST = timezone(timedelta(hours=9))
 SETTINGS = {"DISCORD_WEBHOOK_URL", "OPPORTUNITY_MODEL", "OPPORTUNITY_CODEX_BIN", "OPPORTUNITY_REPORT_FONT", "OPPORTUNITY_LLM_MODE", "NAVER_CLIENT_ID", "NAVER_CLIENT_SECRET"}

@@ -108,7 +108,12 @@ def structured_job(values):
 
 def field(text,label):
     match = re.search(r'(?:' + label + r')\s*[:：]?\s*(.{8,160})',text)
-    return match[1].strip() if match else '확인 필요'
+    if not match:
+        return '확인 필요'
+    value = re.split(r'홈페이지|공유하기|스크랩|지원자격|모집인원|근무지역|근무지|모집직무|전형절차|지원기간|접수기간|시상내역|활동혜택|활동지역|개인정보|더보기',match[1])[0].strip()
+    if not value or any(t in value for t in ('커뮤니티','조회','추천','광고')):
+        return '확인 필요'
+    return value[:80]
 
 
 def extract(candidate,page):
