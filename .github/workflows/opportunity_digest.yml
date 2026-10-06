@@ -43,6 +43,7 @@ jobs:
           NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
           NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
           OPPORTUNITY_REPORT_FONT: /usr/share/fonts/truetype/nanum/NanumGothic.ttf
+          OPPORTUNITY_PROFILE_JSON: ${{ secrets.OPPORTUNITY_PROFILE_JSON }}
           PYTHONUTF8: '1'
         run: python radar.py --cloud
       - name: Save acknowledged opportunity state
@@ -82,11 +83,17 @@ jobs:
           if (str(message.get('id')) != message_id or not message.get('content','').startswith('🧭 기회 레이더')
               or not any(a.get('filename','').endswith(('.pdf','.md')) for a in attachments)):
               raise SystemExit('Discord receipt does not match the expected report')
+          expected = len(saved.get('recommendations',[]))
+          cards = sum(len(e.get('fields',[])) for e in message.get('embeds',[]))
+          if saved.get('digest_version',1) >= 2 and cards != expected:
+              raise SystemExit('Discord recommendation cards do not match the saved ranking')
           print('Discord receipt verified: '+message_id)
           print('Report attachment verified: '+str(len(attachments)))
+          print('Top recommendations verified: '+str(cards))
           with open(os.environ['GITHUB_STEP_SUMMARY'],'a',encoding='utf-8') as summary:
               summary.write('## Discord receipt verified\n\nMessage ID: '+message_id+
-                            '\n\nReport attachment: present\n\nDelivery date: '+saved['last_delivery']+'\n')
+                            '\n\nReport attachment: present\n\nTop recommendation cards: '+str(cards)+
+                            '\n\nDelivery date: '+saved['last_delivery']+'\n')
           PY
       - name: Show collection and delivery result
         if: always()
@@ -102,6 +109,9 @@ jobs:
                        'Date: ' + report['date'],
                        'Discovered: ' + str(len(report['all_discovered'])),
                        'Notifications: ' + str(len(report['selected'])),
+                       'Open accumulated candidates: ' + str(report.get('briefing',{}).get('pool_count',0)),
+                       'Top career recommendations: ' + str(len(report.get('briefing',{}).get('top10',[]))),
+                       'Other classified candidates: ' + str(len(report.get('briefing',{}).get('remaining',[]))),
                        'Delivery: ' + report['delivery'],
                        'Discord message ID: ' + report.get('message_id','none'),
                        'Search provider: ' + stats.get('provider','unknown'),
